@@ -1,0 +1,21 @@
+# Orca Project Configuration for RescueMesh AI
+version: "1"
+
+scripts:
+  setup: |
+    cmd /c "gradlew.bat --version"
+  build: |
+    cmd /c "gradlew.bat assembleDebug"
+  compile: |
+    cmd /c "gradlew.bat compileDebugKotlin"
+  test: |
+    cmd /c "gradlew.bat testDebugUnitTest"
+  lint: |
+    cmd /c "gradlew.bat lintDebug"
+  clean: |
+    cmd /c "gradlew.bat clean"
+
+worktree:
+  copyOnCreate:
+    - local.properties
+    - gradle.properties

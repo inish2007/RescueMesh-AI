@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RescueMesh AI</string>
+    <string name="mission_default">Default Mission</string>
+
+    <!-- Navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_observations">Observations</string>
+    <string name="nav_map">Map</string>
+    <string name="nav_peers">Peers</string>
+    <string name="nav_metrics">Metrics</string>
+
+    <!-- Observation Types -->
+    <string name="obs_type_route">Route Status</string>
+    <string name="obs_type_hazard">Hazard</string>
+    <string name="obs_type_note">Note</string>
+    <string name="obs_type_photo">Photo Evidence</string>
+
+    <!-- Route Statuses -->
+    <string name="status_unknown">Unknown</string>
+    <string name="status_open">Open</string>
+    <string name="status_blocked">Blocked</string>
+    <string name="status_hazard">Hazard</string>
+    <string name="status_conflicted">Conflicted</string>
+    <string name="status_verified">Verified</string>
+
+    <!-- Actions -->
+    <string name="action_create_observation">New Observation</string>
+    <string name="action_start_mesh">Start Mesh</string>
+    <string name="action_stop_mesh">Stop Mesh</string>
+    <string name="action_export_metrics">Export Metrics</string>
+    <string name="action_find_route">Find Route</string>
+
+    <!-- Messages -->
+    <string name="msg_no_observations">No observations yet. Tap + to create one.</string>
+    <string name="msg_no_peers">No peers connected. Start the mesh to discover nearby devices.</string>
+    <string name="msg_mesh_active">Mesh Active</string>
+    <string name="msg_mesh_inactive">Mesh Inactive</string>
+    <string name="msg_syncing">Syncing…</string>
+</resources>
