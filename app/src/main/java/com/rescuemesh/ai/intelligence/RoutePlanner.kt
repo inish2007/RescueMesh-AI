@@ -90,7 +90,8 @@ class RoutePlanner(private val mapDao: MapDao) {
         pq.add(QueueEntry(fromNodeId, 0.0))
 
         while (pq.isNotEmpty()) {
-            val (currentNode, currentCost) = pq.poll()
+            val entry = pq.poll() ?: break
+            val (currentNode, currentCost) = entry
 
             if (currentNode in visited) continue
             visited.add(currentNode)
@@ -144,7 +145,7 @@ class RoutePlanner(private val mapDao: MapDao) {
             when (edge.routeStatus) {
                 "CONFLICTED" -> warnings.add("⚠️ ${nodeMap[edge.fromNodeId]?.label} → ${nodeMap[edge.toNodeId]?.label}: CONFLICTED status")
                 "UNKNOWN" -> warnings.add("❓ ${nodeMap[edge.fromNodeId]?.label} → ${nodeMap[edge.toNodeId]?.label}: status UNKNOWN")
-                "REPORTED_BLOCKED" -> warnings.add("🚫 ${nodeMap[edge.fromNodeId]?.label} → ${nodeMap[edge.toNodeId]?.label}: reported BLOCKED")
+                "REPORTED_BLOCKED", "VERIFIED_BLOCKED" -> warnings.add("🚫 ${nodeMap[edge.fromNodeId]?.label} → ${nodeMap[edge.toNodeId]?.label}: ${if (edge.routeStatus == "VERIFIED_BLOCKED") "verified" else "reported"} BLOCKED")
             }
         }
 

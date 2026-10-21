@@ -1,317 +1,139 @@
 package com.rescuemesh.ai.mesh
 
 import android.content.Context
-import android.util.Log
-import com.google.android.gms.nearby.Nearby
-import com.google.android.gms.nearby.connection.*
 import com.rescuemesh.ai.model.PeerInfo
 import com.rescuemesh.ai.model.SyncMessage
-import com.rescuemesh.ai.model.SyncMessageEnvelope
-import com.rescuemesh.ai.model.SyncObservation
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 
 /**
- * Core mesh transport layer wrapping Google Nearby Connections API.
- *
- * Uses P2P_CLUSTER strategy for multi-peer connections.
- * Each device simultaneously advertises AND discovers,
- * forming an ad-hoc mesh with no central coordinator.
- *
- * This class handles:
- * - Discovery and connection management
- * - Serialization/deserialization of sync messages
- * - Tracking connected peers
- * - Exposing incoming messages as a SharedFlow
+ * State of the local mesh radio and discovery subsystem.
  */
-class MeshTransport(private val context: Context) {
-
-    companion object {
-        private const val TAG = "MeshTransport"
-        private const val SERVICE_ID = "com.rescuemesh.ai.MESH"
-        private val STRATEGY = Strategy.P2P_CLUSTER
-    }
-
-    private val connectionsClient = Nearby.getConnectionsClient(context)
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-
-    // --- Public State ---
-
-    private val _connectedPeers = MutableStateFlow<Map<String, PeerInfo>>(emptyMap())
-    val connectedPeers: StateFlow<Map<String, PeerInfo>> = _connectedPeers.asStateFlow()
-
-    private val _incomingMessages = MutableSharedFlow<Pair<String, SyncMessage>>(extraBufferCapacity = 64)
-    val incomingMessages: SharedFlow<Pair<String, SyncMessage>> = _incomingMessages.asSharedFlow()
-
-    private val _meshState = MutableStateFlow(MeshState.STOPPED)
-    val meshState: StateFlow<MeshState> = _meshState.asStateFlow()
-
-    private var localDeviceName: String = "Device"
-    private var localDeviceId: String = ""
-
-    // Track endpoint→deviceId mapping (endpoint IDs change per session)
-    private val endpointToDeviceId = mutableMapOf<String, String>()
-
-    // Callbacks for peer connections that resolve after Hello exchange
-    private var onPeerConnected: ((String, PeerInfo) -> Unit)? = null
-    private var onPeerDisconnected: ((String) -> Unit)? = null
-
-    // --- Lifecycle ---
-
-    fun startMesh(deviceName: String, deviceId: String) {
-        localDeviceName = deviceName
-        localDeviceId = deviceId
-        _meshState.value = MeshState.STARTING
-
-        startAdvertising()
-        startDiscovering()
-
-        _meshState.value = MeshState.ACTIVE
-        Log.i(TAG, "Mesh started: advertising and discovering as '$deviceName'")
-    }
-
-    fun stopMesh() {
-        connectionsClient.stopAdvertising()
-        connectionsClient.stopDiscovery()
-        connectionsClient.stopAllEndpoints()
-
-        _connectedPeers.value = emptyMap()
-        endpointToDeviceId.clear()
-        _meshState.value = MeshState.STOPPED
-
-        Log.i(TAG, "Mesh stopped")
-    }
-
-    fun setOnPeerConnected(callback: (String, PeerInfo) -> Unit) {
-        onPeerConnected = callback
-    }
-
-    fun setOnPeerDisconnected(callback: (String) -> Unit) {
-        onPeerDisconnected = callback
-    }
-
-    // --- Sending ---
-
-    fun sendMessage(endpointId: String, message: SyncMessage): Boolean {
-        return try {
-            val payload = serializeMessage(message)
-            val bytes = payload.toByteArray(Charsets.UTF_8)
-            connectionsClient.sendPayload(endpointId, Payload.fromBytes(bytes))
-            Log.d(TAG, "Sent ${message::class.simpleName} to $endpointId (${bytes.size} bytes)")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to send to $endpointId", e)
-            false
-        }
-    }
-
-    fun broadcastMessage(message: SyncMessage, excludeEndpoint: String? = null) {
-        val targets = _connectedPeers.value.values
-            .filter { it.endpointId != excludeEndpoint }
-            .map { it.endpointId }
-
-        for (endpoint in targets) {
-            sendMessage(endpoint, message)
-        }
-    }
-
-    fun getEndpointForDevice(deviceId: String): String? {
-        return _connectedPeers.value[deviceId]?.endpointId
-    }
-
-    fun getBytesSent(message: SyncMessage): Int {
-        return serializeMessage(message).toByteArray(Charsets.UTF_8).size
-    }
-
-    // --- Advertising ---
-
-    private fun startAdvertising() {
-        val options = AdvertisingOptions.Builder()
-            .setStrategy(STRATEGY)
-            .build()
-
-        connectionsClient.startAdvertising(
-            localDeviceName,
-            SERVICE_ID,
-            connectionLifecycleCallback,
-            options
-        ).addOnSuccessListener {
-            Log.i(TAG, "Advertising started")
-        }.addOnFailureListener { e ->
-            Log.e(TAG, "Failed to start advertising", e)
-            _meshState.value = MeshState.ERROR
-        }
-    }
-
-    // --- Discovery ---
-
-    private fun startDiscovering() {
-        val options = DiscoveryOptions.Builder()
-            .setStrategy(STRATEGY)
-            .build()
-
-        connectionsClient.startDiscovery(
-            SERVICE_ID,
-            endpointDiscoveryCallback,
-            options
-        ).addOnSuccessListener {
-            Log.i(TAG, "Discovery started")
-        }.addOnFailureListener { e ->
-            Log.e(TAG, "Failed to start discovery", e)
-        }
-    }
-
-    // --- Discovery Callback ---
-
-    private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
-        override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            Log.i(TAG, "Endpoint found: $endpointId (${info.endpointName})")
-
-            // Only request connection if we don't already have one to this endpoint
-            if (_connectedPeers.value.values.none { it.endpointId == endpointId }) {
-                connectionsClient.requestConnection(
-                    localDeviceName,
-                    endpointId,
-                    connectionLifecycleCallback
-                ).addOnSuccessListener {
-                    Log.d(TAG, "Connection requested to $endpointId")
-                }.addOnFailureListener { e ->
-                    Log.w(TAG, "Failed to request connection to $endpointId", e)
-                }
-            }
-        }
-
-        override fun onEndpointLost(endpointId: String) {
-            Log.i(TAG, "Endpoint lost: $endpointId")
-        }
-    }
-
-    // --- Connection Lifecycle ---
-
-    private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
-        override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            Log.i(TAG, "Connection initiated with $endpointId (${info.endpointName})")
-            // Auto-accept connections (for a prototype; production should verify auth token)
-            connectionsClient.acceptConnection(endpointId, payloadCallback)
-        }
-
-        override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
-            when (result.status.statusCode) {
-                ConnectionsStatusCodes.STATUS_OK -> {
-                    Log.i(TAG, "Connected to $endpointId")
-                    // Connection established — send Hello to identify ourselves
-                    val hello = SyncMessage.Hello(
-                        deviceId = localDeviceId,
-                        deviceName = localDeviceName,
-                        missionId = "" // Will be set by SyncCoordinator
-                    )
-                    sendMessage(endpointId, hello)
-                }
-                ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED -> {
-                    Log.w(TAG, "Connection rejected by $endpointId")
-                }
-                else -> {
-                    Log.e(TAG, "Connection failed with $endpointId: ${result.status}")
-                }
-            }
-        }
-
-        override fun onDisconnected(endpointId: String) {
-            Log.i(TAG, "Disconnected from $endpointId")
-            val deviceId = endpointToDeviceId.remove(endpointId)
-
-            if (deviceId != null) {
-                _connectedPeers.value = _connectedPeers.value - deviceId
-                onPeerDisconnected?.invoke(deviceId)
-            } else {
-                // Try to find by endpoint ID
-                val entry = _connectedPeers.value.entries.find { it.value.endpointId == endpointId }
-                if (entry != null) {
-                    _connectedPeers.value = _connectedPeers.value - entry.key
-                    onPeerDisconnected?.invoke(entry.key)
-                }
-            }
-        }
-    }
-
-    // --- Payload (Data) Callback ---
-
-    private val payloadCallback = object : PayloadCallback() {
-        override fun onPayloadReceived(endpointId: String, payload: Payload) {
-            if (payload.type != Payload.Type.BYTES) return
-
-            val bytes = payload.asBytes() ?: return
-            val rawJson = String(bytes, Charsets.UTF_8)
-
-            try {
-                val message = deserializeMessage(rawJson)
-
-                // Handle Hello specially — register the peer
-                if (message is SyncMessage.Hello) {
-                    handleHello(endpointId, message)
-                }
-
-                _incomingMessages.tryEmit(endpointId to message)
-                Log.d(TAG, "Received ${message::class.simpleName} from $endpointId (${bytes.size} bytes)")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to deserialize message from $endpointId", e)
-            }
-        }
-
-        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            // For BYTES payloads, transfer is instant
-        }
-    }
-
-    private fun handleHello(endpointId: String, hello: SyncMessage.Hello) {
-        val peerInfo = PeerInfo(
-            deviceId = hello.deviceId,
-            endpointId = endpointId,
-            displayName = hello.deviceName
-        )
-
-        endpointToDeviceId[endpointId] = hello.deviceId
-        _connectedPeers.value = _connectedPeers.value + (hello.deviceId to peerInfo)
-
-        onPeerConnected?.invoke(hello.deviceId, peerInfo)
-        Log.i(TAG, "Peer registered: ${hello.deviceName} (${hello.deviceId}) at endpoint $endpointId")
-    }
-
-    // --- Serialization ---
-
-    private fun serializeMessage(message: SyncMessage): String {
-        val payload = when (message) {
-            is SyncMessage.Hello -> json.encodeToString(message)
-            is SyncMessage.StateDigest -> json.encodeToString(message)
-            is SyncMessage.EventRequest -> json.encodeToString(message)
-            is SyncMessage.EventBatch -> json.encodeToString(message)
-            is SyncMessage.EventAck -> json.encodeToString(message)
-        }
-        return json.encodeToString(SyncMessageEnvelope(type = message.type, payload = payload))
-    }
-
-    private fun deserializeMessage(rawJson: String): SyncMessage {
-        val envelope = json.decodeFromString<SyncMessageEnvelope>(rawJson)
-        return when (envelope.type) {
-            "HELLO" -> json.decodeFromString<SyncMessage.Hello>(envelope.payload)
-            "STATE_DIGEST" -> json.decodeFromString<SyncMessage.StateDigest>(envelope.payload)
-            "EVENT_REQUEST" -> json.decodeFromString<SyncMessage.EventRequest>(envelope.payload)
-            "EVENT_BATCH" -> json.decodeFromString<SyncMessage.EventBatch>(envelope.payload)
-            "EVENT_ACK" -> json.decodeFromString<SyncMessage.EventAck>(envelope.payload)
-            else -> throw IllegalArgumentException("Unknown message type: ${envelope.type}")
-        }
-    }
-}
-
 enum class MeshState {
     STOPPED,
     STARTING,
     ACTIVE,
     ERROR
+}
+
+/**
+ * Core mesh transport abstraction for RescueMesh AI.
+ *
+ * Defines the contract for ad-hoc peer-to-peer communication, peer discovery,
+ * and state synchronization across devices without central infrastructure.
+ *
+ * Implemented by:
+ * - [NearbyMeshTransport] for physical Android Nearby Connections (P2P_CLUSTER)
+ * - [VirtualMeshTransport] for headless multi-node in-memory simulation
+ */
+interface MeshTransport {
+
+    /**
+     * Map of currently connected peer device IDs to their [PeerInfo].
+     */
+    val connectedPeers: StateFlow<Map<String, PeerInfo>>
+
+    /**
+     * Shared flow of received (endpointId, SyncMessage) pairs.
+     */
+    val incomingMessages: SharedFlow<Pair<String, SyncMessage>>
+
+    /**
+     * Observable state of the mesh radio transport lifecycle.
+     */
+    val meshState: StateFlow<MeshState>
+
+    /**
+     * Starts advertising this node's presence and discovering nearby peers.
+     *
+     * @param deviceName Human-readable device display name.
+     * @param role Operational role or unique identifier for the node.
+     */
+    fun startAdvertisingAndDiscovery(deviceName: String, role: String)
+
+    /**
+     * Backward-compatible lifecycle starter used by Android activities.
+     * Delegates to [startAdvertisingAndDiscovery] by default.
+     */
+    fun startMesh(deviceName: String, deviceId: String) =
+        startAdvertisingAndDiscovery(deviceName, deviceId)
+
+    /**
+     * Stops advertising, discovery, and disconnects all active peer sessions.
+     */
+    fun stop()
+
+    /**
+     * Backward-compatible lifecycle stopper used by Android activities.
+     * Delegates to [stop] by default.
+     */
+    fun stopMesh() = stop()
+
+    /**
+     * Registers a callback invoked when a new peer connection is established.
+     *
+     * @param callback Lambda receiving the peer's device ID and [PeerInfo].
+     */
+    fun setOnPeerConnected(callback: (String, PeerInfo) -> Unit)
+
+    /**
+     * Overload accepting single-parameter [PeerInfo] listener.
+     */
+    fun setOnPeerConnected(listener: (PeerInfo) -> Unit) =
+        setOnPeerConnected { _, peerInfo -> listener(peerInfo) }
+
+    /**
+     * Registers a callback invoked when an existing peer disconnects.
+     *
+     * @param callback Lambda receiving the disconnected peer's device ID.
+     */
+    fun setOnPeerDisconnected(callback: (String) -> Unit)
+
+    /**
+     * Transmits a [SyncMessage] to a specific peer endpoint.
+     *
+     * @param endpointId Target peer endpoint identifier.
+     * @param message Serialized protocol message to transmit.
+     * @return True if message was successfully transmitted, false otherwise.
+     */
+    suspend fun sendMessage(endpointId: String, message: SyncMessage): Boolean
+
+    /**
+     * Broadcasts a [SyncMessage] to all connected peers, optionally excluding a source endpoint.
+     *
+     * @param message Message to broadcast.
+     * @param excludeEndpoint Optional endpoint ID to exclude from broadcast (e.g. relay source).
+     * @return Number of peers to which the message was successfully dispatched.
+     */
+    suspend fun broadcastMessage(message: SyncMessage, excludeEndpoint: String? = null): Int
+
+    /**
+     * Resolves a persistent device ID to its current ephemeral session endpoint ID.
+     *
+     * @param deviceId Unique hardware/semi-stable device ID.
+     * @return Current session endpoint ID, or null if peer is not connected.
+     */
+    fun getEndpointForDevice(deviceId: String): String?
+
+    /**
+     * Returns the cumulative total payload bytes transmitted by this transport instance.
+     */
+    fun getBytesSent(): Long
+
+    /**
+     * Computes the wire payload byte size of a specific [SyncMessage].
+     * Retained for backward compatibility with [SyncCoordinator].
+     */
+    fun getBytesSent(message: SyncMessage): Int
+
+    companion object {
+        /**
+         * Factory operator allowing `MeshTransport(context)` instantiation
+         * for zero-breakage backward compatibility with existing DI setups.
+         */
+        operator fun invoke(context: Context): MeshTransport = NearbyMeshTransport(context)
+
+        operator fun invoke(context: Context, missionIdProvider: () -> String): MeshTransport =
+            NearbyMeshTransport(context, missionIdProvider)
+    }
 }

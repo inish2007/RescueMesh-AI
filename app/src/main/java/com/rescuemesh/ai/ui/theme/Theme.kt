@@ -20,7 +20,7 @@ private val DarkColorScheme = darkColorScheme(
     secondaryContainer = BlueContainer,
     onSecondaryContainer = BlueLight,
 
-    tertiary = GreenSafe,
+    tertiary = GreenPassable,
     onTertiary = BackgroundDark,
     tertiaryContainer = GreenContainer,
     onTertiaryContainer = GreenLight,
@@ -69,3 +69,8 @@ fun RescueMeshTheme(
         content = content
     )
 }
+
+@Composable
+fun RescueMeshAITheme(
+    content: @Composable () -> Unit
+) = RescueMeshTheme(content = content)

@@ -21,7 +21,7 @@ data class ObservationEntity(
     val eventType: String,                           // ROUTE_STATUS, HAZARD, NOTE, PHOTO
     val title: String,
     val description: String = "",
-    val reportedStatus: String? = null,              // OPEN, BLOCKED, HAZARD, SAFE
+    val reportedStatus: String? = null,              // OPEN, BLOCKED, HAZARD
     val sourceType: String = "HUMAN_OBSERVATION",    // HUMAN_OBSERVATION, DEVICE_SENSOR
     val latitude: Double? = null,
     val longitude: Double? = null,
@@ -29,6 +29,7 @@ data class ObservationEntity(
     val mapEdgeId: String? = null,                   // Optional link to map edge
     val mapNodeId: String? = null,                   // Optional link to map node
     val evidencePath: String? = null,                // Local photo file path
+    val evidenceHash: String? = null,                // Cryptographic SHA-256 hex digest of evidence file
     val verificationStatus: String = "UNVERIFIED",   // UNVERIFIED, VERIFIED, CONTESTED
     val observedAtDevice: Long,                      // Timestamp from authoring device
     val receivedAt: Long = System.currentTimeMillis(), // When this device received it

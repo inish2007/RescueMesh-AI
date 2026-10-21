@@ -11,6 +11,7 @@ import androidx.room.PrimaryKey
 data class MissionEntity(
     @PrimaryKey val missionId: String,
     val name: String,
+    val pairingCode: String = "",
     val description: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val isActive: Boolean = true

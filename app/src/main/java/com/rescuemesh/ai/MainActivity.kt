@@ -56,9 +56,18 @@ class MainActivity : ComponentActivity() {
                     val edges by app.mapRepository.observeEdges().collectAsState(initial = emptyList())
                     val peers by app.database.peerDao().observeAll().collectAsState(initial = emptyList())
                     val metrics by app.database.metricsDao().observeRecent().collectAsState(initial = emptyList())
+                    val outboxQueueDepth by app.database.outboxDao().observePendingCount().collectAsState(initial = 0)
+                    val totalBytesSent by app.database.metricsDao().observeTotalBytesSent().collectAsState(initial = 0L)
+                    val totalBytesReceived by app.database.metricsDao().observeTotalBytesReceived().collectAsState(initial = 0L)
+                    val syncEventsCount by app.database.metricsDao().observeSyncEventCount().collectAsState(initial = 0)
                     val connectedPeersMap by app.meshTransport.connectedPeers.collectAsState()
 
                     val coroutineScope = rememberCoroutineScope()
+                    var deviceLocation by remember { mutableStateOf<com.rescuemesh.ai.location.LocationResult?>(null) }
+
+                    LaunchedEffect(Unit) {
+                        deviceLocation = app.locationProvider.getLastKnownLocation() ?: app.locationProvider.getCurrentLocation()
+                    }
 
                     RescueMeshNavHost(
                         homeScreen = {
@@ -74,7 +83,9 @@ class MainActivity : ComponentActivity() {
                         },
                         observationsScreen = {
                             ObservationScreen(
-                                onSaveObservation = { type, title, desc, status, lat, lon, acc ->
+                                currentLocation = deviceLocation,
+                                evidenceManager = app.evidenceManager,
+                                onSaveObservation = { type, title, desc, status, lat, lon, acc, photoPath, photoHash ->
                                     coroutineScope.launch {
                                         val obs = app.observationRepository.createObservation(
                                             eventType = type,
@@ -83,7 +94,9 @@ class MainActivity : ComponentActivity() {
                                             reportedStatus = status,
                                             latitude = lat,
                                             longitude = lon,
-                                            accuracy = acc
+                                            accuracy = acc,
+                                            evidencePath = photoPath,
+                                            evidenceHash = photoHash
                                         )
                                         // Trigger mesh broadcast
                                         app.syncCoordinator.onNewLocalObservation(obs)
@@ -135,6 +148,10 @@ class MainActivity : ComponentActivity() {
                                 metrics = metrics,
                                 totalObservations = observations.size,
                                 connectedPeersCount = connectedPeersMap.size,
+                                outboxQueueDepth = outboxQueueDepth,
+                                syncEventsCount = syncEventsCount,
+                                bytesSentTotal = totalBytesSent,
+                                bytesReceivedTotal = totalBytesReceived,
                                 onExportAuditLog = {
                                     Toast.makeText(this@MainActivity, "Audit log exported to local storage", Toast.LENGTH_SHORT).show()
                                 }

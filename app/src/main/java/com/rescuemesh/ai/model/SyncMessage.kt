@@ -88,6 +88,7 @@ data class SyncObservation(
     val accuracy: Float? = null,
     val mapEdgeId: String? = null,
     val mapNodeId: String? = null,
+    val evidenceHash: String? = null,
     val verificationStatus: String = "UNVERIFIED",
     val observedAtDevice: Long,
     val relayHopsRemaining: Int = 3

@@ -25,12 +25,25 @@ fun MetricsScreen(
     metrics: List<MetricsEventEntity>,
     totalObservations: Int,
     connectedPeersCount: Int,
+    outboxQueueDepth: Int = 0,
+    syncEventsCount: Int = 0,
+    bytesSentTotal: Long? = null,
+    bytesReceivedTotal: Long? = null,
     onExportAuditLog: () -> Unit
 ) {
     var selectedScheduler by remember { mutableStateOf("VOI") }
     var exportSuccess by remember { mutableStateOf(false) }
 
-    val totalBytesTransferred = metrics.sumOf { it.bytesTransferred ?: 0 }
+    val effectiveBytesSent = bytesSentTotal ?: metrics.filter { it.metricType == "SEND" || it.metricType == "BYTES_SENT" }
+        .sumOf { it.bytesTransferred?.toLong() ?: 0L }
+    val effectiveBytesReceived = bytesReceivedTotal ?: metrics.filter { it.metricType == "RECEIVE" || it.metricType == "BYTES_RECEIVED" }
+        .sumOf { it.bytesTransferred?.toLong() ?: 0L }
+    val effectiveSyncCount = if (syncEventsCount > 0) syncEventsCount else metrics.count {
+        it.metricType == "SYNC" || it.metricType == "STATE_DIGEST" || it.metricType == "RECONCILIATION"
+    }
+    val effectiveQueueDepth = if (outboxQueueDepth > 0) outboxQueueDepth else {
+        metrics.firstOrNull { it.metricType == "OUTBOX_QUEUE_DEPTH" }?.bytesTransferred ?: 0
+    }
     val avgLatency = metrics.mapNotNull { it.latencyMs }.let {
         if (it.isNotEmpty()) it.average().toLong() else 0L
     }
@@ -47,7 +60,7 @@ fun MetricsScreen(
                             color = TextPrimary
                         )
                         Text(
-                            text = "Ablation & Metrics Log",
+                            text = "Tactical Telemetry & Mesh Metrics",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
@@ -77,12 +90,57 @@ fun MetricsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Summary KPI Cards
+            // Tactical Telemetry Dashboard Header (Features 25 & 26)
+            item {
+                Text(
+                    text = "Live Mesh Transport Telemetry",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+            }
+
+            // Tactical Dashboard Cards: Outbox Queue, Bytes Sent, Bytes Received
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    MetricKpiCard(
+                        title = "Outbox Queue Depth",
+                        value = "$effectiveQueueDepth",
+                        subtitle = if (effectiveQueueDepth == 0) "Queue Clear" else "Pending Mesh",
+                        valueColor = if (effectiveQueueDepth > 0) StatusConflicted else StatusClear,
+                        modifier = Modifier.weight(1f)
+                    )
+                    MetricKpiCard(
+                        title = "Bytes Transmitted",
+                        value = "${effectiveBytesSent / 1024} KB",
+                        subtitle = "Tx: $effectiveBytesSent B",
+                        modifier = Modifier.weight(1f)
+                    )
+                    MetricKpiCard(
+                        title = "Bytes Received",
+                        value = "${effectiveBytesReceived / 1024} KB",
+                        subtitle = "Rx: $effectiveBytesReceived B",
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            // State Reconciliation & Mission Activity Cards
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    MetricKpiCard(
+                        title = "State Syncs",
+                        value = "$effectiveSyncCount",
+                        subtitle = "Reconciled",
+                        valueColor = Color(0xFF64B5F6),
+                        modifier = Modifier.weight(1f)
+                    )
                     MetricKpiCard(
                         title = "Observations",
                         value = "$totalObservations",
@@ -90,15 +148,9 @@ fun MetricsScreen(
                         modifier = Modifier.weight(1f)
                     )
                     MetricKpiCard(
-                        title = "Transferred",
-                        value = "${totalBytesTransferred / 1024} KB",
-                        subtitle = "Over radio",
-                        modifier = Modifier.weight(1f)
-                    )
-                    MetricKpiCard(
-                        title = "Avg Delay",
+                        title = "Avg Latency",
                         value = "${avgLatency}ms",
-                        subtitle = "P2P latency",
+                        subtitle = "P2P roundtrip",
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -152,13 +204,13 @@ fun MetricsScreen(
             if (exportSuccess) {
                 item {
                     Surface(
-                        color = StatusSafe.copy(alpha = 0.2f),
+                        color = StatusClear.copy(alpha = 0.2f),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
                             text = "✓ Audit trail exported to app external storage!",
-                            color = StatusSafe,
+                            color = StatusClear,
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(12.dp)
@@ -206,6 +258,7 @@ fun MetricKpiCard(
     title: String,
     value: String,
     subtitle: String,
+    valueColor: Color = PrimaryAmber,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -224,7 +277,7 @@ fun MetricKpiCard(
                 text = value,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
-                color = PrimaryAmber
+                color = valueColor
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
@@ -239,9 +292,12 @@ fun MetricKpiCard(
 @Composable
 fun MetricEventRow(event: MetricsEventEntity) {
     val typeColor = when (event.metricType) {
-        "SEND" -> StatusSafe
-        "RECEIVE" -> PrimaryAmber
-        "QUEUE_DECISION" -> StatusConflicted
+        "SEND", "BYTES_SENT" -> StatusClear
+        "RECEIVE", "BYTES_RECEIVED" -> PrimaryAmber
+        "SYNC", "STATE_DIGEST", "RECONCILIATION" -> Color(0xFF64B5F6)
+        "QUEUE_DECISION", "OUTBOX_QUEUE_DEPTH" -> StatusConflicted
+        "CONNECTION", "PEERS_CONNECTED" -> StatusClear
+        "DISCONNECT" -> StatusBlocked
         else -> TextSecondary
     }
 

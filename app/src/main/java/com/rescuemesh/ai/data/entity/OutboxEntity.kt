@@ -16,6 +16,7 @@ data class OutboxEntity(
     val priority: Float = 0f,                // Computed by PriorityScheduler
     val schedulerType: String = "VOI",       // VOI, FIFO, RANDOM — which scheduler scored it
     val retryCount: Int = 0,
+    val nextAttemptAt: Long = 0L,
     val maxRetries: Int = 5,
     val maxHops: Int = 3,
     val createdAt: Long = System.currentTimeMillis(),

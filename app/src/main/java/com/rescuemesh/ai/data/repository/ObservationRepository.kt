@@ -16,8 +16,19 @@ class ObservationRepository(
     private val observationDao: ObservationDao,
     private val outboxDao: OutboxDao,
     private val deviceId: String,
-    private val missionId: String
+    private val missionIdProvider: () -> String
 ) {
+    // Secondary constructor for backward compatibility
+    constructor(
+        observationDao: ObservationDao,
+        outboxDao: OutboxDao,
+        deviceId: String,
+        missionId: String
+    ) : this(observationDao, outboxDao, deviceId, { missionId })
+
+    val currentMissionId: String
+        get() = missionIdProvider()
+
     private val localSequence = AtomicLong(0)
 
     /** Initialize the sequence counter from the database */
@@ -41,14 +52,32 @@ class ObservationRepository(
         accuracy: Float? = null,
         mapEdgeId: String? = null,
         mapNodeId: String? = null,
-        evidencePath: String? = null
+        evidencePath: String? = null,
+        evidenceHash: String? = null
     ): ObservationEntity {
         val seq = localSequence.incrementAndGet()
         val now = System.currentTimeMillis()
 
+        var validEvidencePath = evidencePath
+        var validEvidenceHash = evidenceHash
+        if (validEvidencePath != null) {
+            val file = java.io.File(validEvidencePath)
+            if (file.exists() && file.isFile && file.length() > 0L) {
+                // Physical file exists and is non-empty
+            } else {
+                if (file.exists() && file.isFile) {
+                    file.delete()
+                }
+                validEvidencePath = null
+                validEvidenceHash = null
+            }
+        } else {
+            validEvidenceHash = null
+        }
+
         val observation = ObservationEntity(
             eventId = UUID.randomUUID().toString(),
-            missionId = missionId,
+            missionId = currentMissionId,
             authorDeviceId = deviceId,
             authorSequence = seq,
             eventType = eventType,
@@ -61,7 +90,8 @@ class ObservationRepository(
             accuracy = accuracy,
             mapEdgeId = mapEdgeId,
             mapNodeId = mapNodeId,
-            evidencePath = evidencePath,
+            evidencePath = validEvidencePath,
+            evidenceHash = validEvidenceHash,
             verificationStatus = "UNVERIFIED",
             observedAtDevice = now,
             receivedAt = now,
@@ -88,9 +118,10 @@ class ObservationRepository(
 
     /**
      * Store an observation received from a peer.
-     * Returns true if this was a new observation, false if duplicate.
+     * Returns true if this was a new observation, false if duplicate or foreign mission.
      */
     suspend fun receiveObservation(observation: ObservationEntity): Boolean {
+        if (observation.missionId != currentMissionId) return false
         if (observationDao.exists(observation.eventId)) return false
 
         observationDao.insert(
@@ -103,17 +134,17 @@ class ObservationRepository(
     }
 
     fun observeAll(): Flow<List<ObservationEntity>> =
-        observationDao.observeAll(missionId)
+        observationDao.observeAll(currentMissionId)
 
     fun observeCount(): Flow<Int> =
-        observationDao.observeCount(missionId)
+        observationDao.observeCount(currentMissionId)
 
     fun observeLocalCount(): Flow<Int> =
-        observationDao.observeLocalCount(missionId)
+        observationDao.observeLocalCount(currentMissionId)
 
     fun observeReceivedCount(): Flow<Int> =
-        observationDao.observeReceivedCount(missionId)
+        observationDao.observeReceivedCount(currentMissionId)
 
     suspend fun getAll(): List<ObservationEntity> =
-        observationDao.getAll(missionId)
+        observationDao.getAll(currentMissionId)
 }

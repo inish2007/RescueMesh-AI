@@ -98,34 +98,42 @@ class PriorityScheduler(
      */
     suspend fun selectWithinBudget(maxBytes: Int = Int.MAX_VALUE): List<Pair<String, Float>> {
         val pending = outboxDao.getPendingByPriority()
-        val scored = mutableListOf<Pair<String, Float>>()
-        var totalBytes = 0
+        val scoredList = mutableListOf<Triple<String, Float, Int>>()
 
         for (entry in pending) {
             val obs = observationDao.getById(entry.eventId) ?: continue
             val priority = scoreObservation(obs)
-
-            // Estimate message size (rough: title + description + metadata)
             val estimatedBytes = (obs.title.length + obs.description.length + 200) * 2
-            if (totalBytes + estimatedBytes > maxBytes) break
+            scoredList.add(Triple(entry.eventId, priority, estimatedBytes))
+        }
 
-            scored.add(entry.eventId to priority)
+        // Must sort by priority descending BEFORE budget cutoff
+        val sortedByPriority = scoredList.sortedByDescending { it.second }
+        val result = mutableListOf<Pair<String, Float>>()
+        var totalBytes = 0
+
+        for ((eventId, priority, estimatedBytes) in sortedByPriority) {
+            if (totalBytes + estimatedBytes > maxBytes) break
+            result.add(eventId to priority)
             totalBytes += estimatedBytes
         }
 
-        return scored.sortedByDescending { it.second }
+        return result
     }
 
     // --- Feature Computations ---
 
     private fun computeUrgency(obs: ObservationEntity): Float {
+        val eventTypeUpper = obs.eventType.uppercase()
+        val statusUpper = obs.reportedStatus?.uppercase()
+
         return when {
-            obs.eventType == "HAZARD" -> 1.0f
-            obs.reportedStatus == "BLOCKED" -> 0.95f
-            obs.eventType == "ROUTE_STATUS" && obs.reportedStatus == "OPEN" -> 0.7f
-            obs.eventType == "ROUTE_STATUS" -> 0.6f
-            obs.eventType == "PHOTO" -> 0.4f
-            obs.eventType == "NOTE" -> 0.3f
+            eventTypeUpper == "HAZARD" -> 1.0f
+            statusUpper in listOf("BLOCKED", "REPORTED_BLOCKED", "VERIFIED_BLOCKED") -> 0.95f
+            eventTypeUpper == "ROUTE_STATUS" && statusUpper in listOf("OPEN", "REPORTED_OPEN", "VERIFIED_OPEN") -> 0.7f
+            eventTypeUpper == "ROUTE_STATUS" -> 0.6f
+            eventTypeUpper == "PHOTO" -> 0.4f
+            eventTypeUpper == "NOTE" -> 0.3f
             else -> 0.2f
         }
     }

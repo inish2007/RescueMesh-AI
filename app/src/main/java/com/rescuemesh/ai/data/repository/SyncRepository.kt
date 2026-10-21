@@ -78,11 +78,69 @@ class SyncRepository(
         )
     }
 
+    suspend fun recordBytesSent(peerId: String?, bytes: Int, eventId: String? = null) {
+        metricsDao.insert(
+            MetricsEventEntity(
+                metricType = "BYTES_SENT",
+                peerId = peerId,
+                eventId = eventId,
+                bytesTransferred = bytes
+            )
+        )
+    }
+
+    suspend fun recordBytesReceived(peerId: String?, bytes: Int, eventId: String? = null) {
+        metricsDao.insert(
+            MetricsEventEntity(
+                metricType = "BYTES_RECEIVED",
+                peerId = peerId,
+                eventId = eventId,
+                bytesTransferred = bytes
+            )
+        )
+    }
+
+    suspend fun recordPeersConnected(count: Int, peerId: String? = null) {
+        metricsDao.insert(
+            MetricsEventEntity(
+                metricType = "PEERS_CONNECTED",
+                peerId = peerId,
+                bytesTransferred = count,
+                details = "Connected peers count: $count"
+            )
+        )
+    }
+
+    suspend fun recordOutboxQueueDepth(depth: Int) {
+        metricsDao.insert(
+            MetricsEventEntity(
+                metricType = "OUTBOX_QUEUE_DEPTH",
+                bytesTransferred = depth,
+                details = "Pending outbox queue depth: $depth"
+            )
+        )
+    }
+
+    suspend fun recordSync(peerId: String, details: String) {
+        metricsDao.insert(
+            MetricsEventEntity(
+                metricType = "SYNC",
+                peerId = peerId,
+                details = details
+            )
+        )
+    }
+
     fun observeRecentMetrics(limit: Int = 100): Flow<List<MetricsEventEntity>> =
         metricsDao.observeRecent(limit)
 
     fun observeTotalBytesSent(): Flow<Long?> = metricsDao.observeTotalBytesSent()
     fun observeTotalBytesReceived(): Flow<Long?> = metricsDao.observeTotalBytesReceived()
+    fun observeLatestPeersConnected(): Flow<MetricsEventEntity?> = metricsDao.observeLatestPeersConnected()
+    fun observePeersConnectedCount(): Flow<Int> = metricsDao.observePeersConnectedCount()
+    fun observeLatestOutboxQueueDepth(): Flow<MetricsEventEntity?> = metricsDao.observeLatestOutboxQueueDepth()
+    fun observeSyncEventCount(): Flow<Int> = metricsDao.observeSyncEventCount()
+    fun observeSyncEvents(): Flow<List<MetricsEventEntity>> = metricsDao.observeSyncEvents()
     fun observeAvgDeliveryLatency(): Flow<Double?> = metricsDao.observeAvgDeliveryLatency()
     fun observeQueueDecisionCount(): Flow<Int> = metricsDao.observeQueueDecisionCount()
 

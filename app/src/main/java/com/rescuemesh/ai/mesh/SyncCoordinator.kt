@@ -8,11 +8,12 @@ import com.rescuemesh.ai.data.entity.ObservationEntity
 import com.rescuemesh.ai.data.entity.OutboxEntity
 import com.rescuemesh.ai.data.repository.ObservationRepository
 import com.rescuemesh.ai.data.repository.SyncRepository
+import com.rescuemesh.ai.intelligence.MapFusionEngine
 import com.rescuemesh.ai.intelligence.PriorityScheduler
 import com.rescuemesh.ai.model.SyncMessage
 import com.rescuemesh.ai.model.SyncObservation
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
 
 /**
  * Coordinates synchronization between this device and connected peers.
@@ -32,22 +33,78 @@ class SyncCoordinator(
     private val observationRepo: ObservationRepository,
     private val syncRepo: SyncRepository,
     private val scheduler: PriorityScheduler,
+    private val mapFusionEngine: MapFusionEngine? = null,
     private val deviceId: String,
     private val missionId: String
 ) {
     companion object {
         private const val TAG = "SyncCoordinator"
         private const val SYNC_INTERVAL_MS = 30_000L  // Re-sync every 30 seconds
+        const val SAFETY_PRIORITY_FLOOR = 0.80f
+        const val BASE_BACKOFF_MS = 1000L
+        const val MAX_BACKOFF_MS = 32000L
+
+        /**
+         * Calculates bounded exponential backoff delay:
+         * min(1000L * (1L shl min(retryCount, 5)), 32000L).
+         */
+        fun calculateBackoff(retryCount: Int): Long {
+            val shift = minOf(maxOf(0, retryCount), 5)
+            return minOf(BASE_BACKOFF_MS * (1L shl shift), MAX_BACKOFF_MS)
+        }
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var syncJob: Job? = null
 
+    /**
+     * Crash recovery: Reset any orphaned SENDING entries in the outbox back to PENDING.
+     */
+    suspend fun recoverOrphanedOutbox(): Int {
+        return outboxDao.resetOrphanedSendingToPending()
+    }
+
+    /**
+     * Determines if an outbox entry should be transmitted based on retry backoff
+     * and the Absolute Safety Override (P >= 0.80).
+     */
+    fun shouldTransmit(entry: OutboxEntity, now: Long = System.currentTimeMillis()): Boolean {
+        // Absolute Safety Override: Observations with P >= 0.80 bypass backoff delays and transmit immediately
+        if (entry.priority >= SAFETY_PRIORITY_FLOOR) {
+            return true
+        }
+        return now >= entry.nextAttemptAt
+    }
+
+    /**
+     * Filters outbox entries eligible for transmission at the specified time.
+     */
+    fun filterTransmittable(entries: List<OutboxEntity>, now: Long = System.currentTimeMillis()): List<OutboxEntity> {
+        return entries.filter { shouldTransmit(it, now) }
+    }
+
     fun start() {
+        // Outbox crash recovery: reset orphaned SENDING entries on startup
+        scope.launch {
+            try {
+                val recovered = recoverOrphanedOutbox()
+                if (recovered > 0) {
+                    Log.i(TAG, "Outbox crash recovery: reset $recovered orphaned SENDING entries to PENDING")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error executing outbox crash recovery", e)
+            }
+        }
         // Listen for incoming messages
         scope.launch {
-            transport.incomingMessages.collectLatest { (endpointId, message) ->
-                handleMessage(endpointId, message)
+            transport.incomingMessages.collect { (endpointId, message) ->
+                try {
+                    handleMessage(endpointId, message)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error handling message ${message::class.simpleName} from $endpointId", e)
+                }
             }
         }
 
@@ -143,7 +200,7 @@ class SyncCoordinator(
         }
     }
 
-    private suspend fun sendDigest(endpointId: String) {
+    suspend fun sendDigest(endpointId: String) {
         val digests = observationDao.getAllSequenceDigests()
         val sequenceMap = digests.associate { it.authorDeviceId to it.maxSeq }
 
@@ -153,20 +210,52 @@ class SyncCoordinator(
         )
 
         transport.sendMessage(endpointId, digest)
+        syncRepo.recordSync(
+            peerId = endpointId,
+            details = "Sent StateDigest with ${sequenceMap.size} authors"
+        )
         Log.d(TAG, "Sent digest with ${sequenceMap.size} authors to $endpointId")
     }
 
     /**
-     * Compare peer's digest with our own to find what they're missing.
-     * Then send the missing events.
+     * Compare peer's digest with our own:
+     * - If peer has higher sequences: send SyncMessage.EventRequest for missing events.
+     * - If local has higher sequences: enqueue missing observations for transmission to that peer (and dispatch).
      */
-    private suspend fun handleDigest(endpointId: String, digest: SyncMessage.StateDigest) {
+    suspend fun handleDigest(endpointId: String, digest: SyncMessage.StateDigest) {
         Log.d(TAG, "Received digest from ${digest.deviceId}: ${digest.sequences}")
 
         val ourDigests = observationDao.getAllSequenceDigests()
         val ourSequences = ourDigests.associate { it.authorDeviceId to it.maxSeq }
 
-        // Find events we have that the peer doesn't
+        syncRepo.recordSync(
+            peerId = digest.deviceId,
+            details = "Received StateDigest from ${digest.deviceId} with ${digest.sequences.size} authors"
+        )
+
+        // 1. Peer has higher sequences: request missing events from peer
+        val missingFromAuthors = mutableMapOf<String, Long>()
+        for ((authorId, peerMaxSeq) in digest.sequences) {
+            val ourMaxSeq = ourSequences[authorId] ?: 0L
+            if (peerMaxSeq > ourMaxSeq) {
+                missingFromAuthors[authorId] = ourMaxSeq
+            }
+        }
+
+        if (missingFromAuthors.isNotEmpty()) {
+            val eventRequest = SyncMessage.EventRequest(
+                requestorDeviceId = deviceId,
+                missingFromAuthors = missingFromAuthors
+            )
+            transport.sendMessage(endpointId, eventRequest)
+            syncRepo.recordSync(
+                peerId = digest.deviceId,
+                details = "Sent EventRequest for ${missingFromAuthors.size} authors: $missingFromAuthors"
+            )
+            Log.i(TAG, "Sent EventRequest to ${digest.deviceId} ($endpointId) for missing sequences: $missingFromAuthors")
+        }
+
+        // 2. Local has higher sequences: enqueue missing observations for transmission to that peer
         val eventsToSend = mutableListOf<ObservationEntity>()
 
         for ((authorId, ourMaxSeq) in ourSequences) {
@@ -178,14 +267,29 @@ class SyncCoordinator(
         }
 
         if (eventsToSend.isEmpty()) {
-            Log.d(TAG, "Peer ${digest.deviceId} is up to date")
+            Log.d(TAG, "Peer ${digest.deviceId} is up to date on our local observations")
             return
         }
 
-        // Score and sort by priority
+        // Score and sort by priority (Value-of-Information)
         val scored = eventsToSend.map { obs ->
             obs to scheduler.scoreObservation(obs)
         }.sortedByDescending { it.second }
+
+        // Commit to Outbox table BEFORE transmitting over mesh (Durable Local-First Persistence)
+        for ((obs, priority) in scored) {
+            if (!outboxDao.hasPendingEntry(obs.eventId, digest.deviceId) && !outboxDao.isDeliveredTo(obs.eventId, digest.deviceId)) {
+                outboxDao.insert(
+                    OutboxEntity(
+                        eventId = obs.eventId,
+                        targetPeerId = digest.deviceId,
+                        priority = priority,
+                        schedulerType = "VOI",
+                        status = "PENDING"
+                    )
+                )
+            }
+        }
 
         // Send in batches
         val syncObservations = scored.map { (obs, _) -> observationToSync(obs) }
@@ -195,21 +299,28 @@ class SyncCoordinator(
         )
 
         val bytesSent = transport.getBytesSent(batch)
-        transport.sendMessage(endpointId, batch)
+        val sent = transport.sendMessage(endpointId, batch)
 
-        // Record metrics for each event
-        for ((obs, priority) in scored) {
-            syncRepo.recordSend(obs.eventId, digest.deviceId, bytesSent / scored.size, "VOI", priority)
-            syncRepo.recordQueueDecision(
-                obs.eventId, "VOI", priority,
-                scheduler.scoreBreakdown(obs)
-            )
+        if (sent) {
+            // Record metrics for each event
+            for ((obs, priority) in scored) {
+                syncRepo.recordSend(obs.eventId, digest.deviceId, bytesSent / scored.size, "VOI", priority)
+                syncRepo.recordQueueDecision(
+                    obs.eventId, "VOI", priority,
+                    scheduler.scoreBreakdown(obs)
+                )
+            }
+            syncRepo.recordBytesSent(digest.deviceId, bytesSent)
         }
 
-        Log.i(TAG, "Sent ${eventsToSend.size} missing events to ${digest.deviceId}")
+        // Record current pending queue depth metric
+        val queueDepth = outboxDao.getPendingForPeer(digest.deviceId).size
+        syncRepo.recordOutboxQueueDepth(queueDepth)
+
+        Log.i(TAG, "Enqueued and dispatched ${eventsToSend.size} missing events to ${digest.deviceId}")
     }
 
-    private suspend fun handleEventRequest(endpointId: String, request: SyncMessage.EventRequest) {
+    suspend fun handleEventRequest(endpointId: String, request: SyncMessage.EventRequest) {
         val eventsToSend = mutableListOf<ObservationEntity>()
 
         for ((authorId, afterSeq) in request.missingFromAuthors) {
@@ -219,13 +330,50 @@ class SyncCoordinator(
 
         if (eventsToSend.isEmpty()) return
 
-        val syncObservations = eventsToSend.map { observationToSync(it) }
+        // Score and sort by priority
+        val scored = eventsToSend.map { obs ->
+            obs to scheduler.scoreObservation(obs)
+        }.sortedByDescending { it.second }
+
+        // Commit to Outbox table BEFORE transmitting over mesh (Durable Local-First Persistence)
+        for ((obs, priority) in scored) {
+            if (!outboxDao.hasPendingEntry(obs.eventId, request.requestorDeviceId) && !outboxDao.isDeliveredTo(obs.eventId, request.requestorDeviceId)) {
+                outboxDao.insert(
+                    OutboxEntity(
+                        eventId = obs.eventId,
+                        targetPeerId = request.requestorDeviceId,
+                        priority = priority,
+                        schedulerType = "VOI",
+                        status = "PENDING"
+                    )
+                )
+            }
+        }
+
+        val syncObservations = scored.map { (obs, _) -> observationToSync(obs) }
         val batch = SyncMessage.EventBatch(
             senderDeviceId = deviceId,
             events = syncObservations
         )
 
-        transport.sendMessage(endpointId, batch)
+        val bytesSent = transport.getBytesSent(batch)
+        val sent = transport.sendMessage(endpointId, batch)
+
+        if (sent) {
+            for ((obs, priority) in scored) {
+                syncRepo.recordSend(obs.eventId, request.requestorDeviceId, bytesSent / scored.size, "VOI", priority)
+                syncRepo.recordQueueDecision(
+                    obs.eventId, "VOI", priority,
+                    scheduler.scoreBreakdown(obs)
+                )
+            }
+            syncRepo.recordBytesSent(request.requestorDeviceId, bytesSent)
+        }
+
+        syncRepo.recordSync(
+            peerId = request.requestorDeviceId,
+            details = "Responded to EventRequest with ${eventsToSend.size} events"
+        )
         Log.i(TAG, "Responded to event request with ${eventsToSend.size} events")
     }
 
@@ -234,11 +382,13 @@ class SyncCoordinator(
      * - Duplicate suppression via eventId
      * - Store new events
      * - Forward to other peers (relay) if hops remaining
-     * - Send ACK back
+     * - Send ACK back for all batch events to resolve sender outbox
      */
-    private suspend fun handleEventBatch(endpointId: String, batch: SyncMessage.EventBatch) {
+    suspend fun handleEventBatch(endpointId: String, batch: SyncMessage.EventBatch): SyncMessage.EventAck {
         val newEventIds = mutableListOf<String>()
         val receivedAt = System.currentTimeMillis()
+        val totalBytes = transport.getBytesSent(batch)
+        syncRepo.recordBytesReceived(batch.senderDeviceId, totalBytes)
 
         for (syncObs in batch.events) {
             // Duplicate suppression
@@ -248,8 +398,20 @@ class SyncCoordinator(
             observationDao.insert(observation)
             newEventIds.add(syncObs.eventId)
 
+            // Bridge to MapFusionEngine for conflict detection and edge state update
+            mapFusionEngine?.let { engine ->
+                val fusionResult = engine.applyObservation(observation)
+                if (fusionResult != null) {
+                    if (fusionResult.isConflict) {
+                        Log.w(TAG, "Map conflict detected on edge ${fusionResult.edgeId}: ${fusionResult.conflictingIds}")
+                    } else {
+                        Log.d(TAG, "Edge ${fusionResult.edgeId} updated to ${fusionResult.newStatus}")
+                    }
+                }
+            }
+
             // Record receive metric
-            syncRepo.recordReceive(syncObs.eventId, batch.senderDeviceId, 0)
+            syncRepo.recordReceive(syncObs.eventId, batch.senderDeviceId, totalBytes / maxOf(1, batch.events.size))
 
             // Relay to other connected peers if hops remaining
             if (syncObs.relayHopsRemaining > 0) {
@@ -257,19 +419,26 @@ class SyncCoordinator(
             }
         }
 
-        // Send ACK
-        if (newEventIds.isNotEmpty()) {
-            val ack = SyncMessage.EventAck(
-                deviceId = deviceId,
-                acknowledgedEventIds = newEventIds
-            )
+        // Send ACK back for all events in the non-empty batch so sender resolves outbox / retries
+        val ack = SyncMessage.EventAck(
+            deviceId = deviceId,
+            acknowledgedEventIds = batch.events.map { it.eventId }
+        )
+        if (endpointId.isNotEmpty() && batch.events.isNotEmpty()) {
             transport.sendMessage(endpointId, ack)
-
-            Log.i(TAG, "Received and stored ${newEventIds.size} new events from ${batch.senderDeviceId}")
         }
+
+        Log.i(TAG, "Received batch from ${batch.senderDeviceId}: stored ${newEventIds.size}/${batch.events.size} new events, ACK sent for ${ack.acknowledgedEventIds.size}")
+        return ack
     }
 
-    private suspend fun handleEventAck(ack: SyncMessage.EventAck) {
+    suspend fun handleEventBatch(batch: SyncMessage.EventBatch): SyncMessage.EventAck {
+        val endpointId = transport.connectedPeers.value.values
+            .find { it.deviceId == batch.senderDeviceId }?.endpointId ?: ""
+        return handleEventBatch(endpointId, batch)
+    }
+
+    suspend fun handleEventAck(ack: SyncMessage.EventAck) {
         val now = System.currentTimeMillis()
         for (eventId in ack.acknowledgedEventIds) {
             // Record delivery receipt
@@ -280,6 +449,9 @@ class SyncCoordinator(
                     deliveredAt = now
                 )
             )
+
+            // Update outbox status to DELIVERED
+            outboxDao.updateStatusByEvent(eventId, "DELIVERED")
 
             // Calculate delivery latency
             val observation = observationDao.getById(eventId)
@@ -308,6 +480,16 @@ class SyncCoordinator(
                 relayHopsRemaining = observation.relayHopsRemaining - 1
             )
 
+            // Commit to local Outbox BEFORE transmitting over mesh (Durable Local-First Persistence)
+            outboxDao.insert(
+                OutboxEntity(
+                    eventId = observation.eventId,
+                    targetPeerId = peer.deviceId,
+                    priority = scheduler.scoreObservation(observation),
+                    status = "PENDING"
+                )
+            )
+
             val batch = SyncMessage.EventBatch(
                 senderDeviceId = deviceId,
                 events = listOf(relayObs)
@@ -316,6 +498,67 @@ class SyncCoordinator(
             transport.sendMessage(peer.endpointId, batch)
             Log.d(TAG, "Relayed ${observation.eventId} to ${peer.deviceId}")
         }
+    }
+
+    /**
+     * Drains pending outbox entries eligible for transmission under backoff rules.
+     * Enforces the Absolute Safety Override (P >= 0.80).
+     */
+    suspend fun processPendingOutbox(now: Long = System.currentTimeMillis()): Int {
+        val pending = outboxDao.getPendingByPriority()
+        val transmittable = filterTransmittable(pending, now)
+        val peers = transport.connectedPeers.value
+
+        var transmittedCount = 0
+
+        for (entry in transmittable) {
+            val targets = if (entry.targetPeerId != null) {
+                peers.filter { it.key == entry.targetPeerId }.values
+            } else {
+                peers.values
+            }
+
+            if (targets.isEmpty()) {
+                continue
+            }
+
+            val observation = observationDao.getById(entry.eventId)
+            if (observation == null) {
+                outboxDao.updateStatus(entry.id, "FAILED", now)
+                continue
+            }
+
+            outboxDao.updateStatus(entry.id, "SENDING", now)
+
+            val syncObs = observationToSync(observation)
+            val batch = SyncMessage.EventBatch(
+                senderDeviceId = deviceId,
+                events = listOf(syncObs)
+            )
+
+            var anySent = false
+            for (target in targets) {
+                if (outboxDao.isDeliveredTo(entry.eventId, target.deviceId)) continue
+                val sent = transport.sendMessage(target.endpointId, batch)
+                if (sent) {
+                    anySent = true
+                    val bytesSent = transport.getBytesSent(batch)
+                    syncRepo.recordSend(entry.eventId, target.deviceId, bytesSent, entry.schedulerType, entry.priority)
+                }
+            }
+
+            if (anySent) {
+                transmittedCount++
+            } else {
+                val newRetry = entry.retryCount + 1
+                val backoffMs = calculateBackoff(newRetry)
+                val nextAttempt = if (entry.priority >= SAFETY_PRIORITY_FLOOR) now else now + backoffMs
+                val status = if (newRetry >= entry.maxRetries) "FAILED" else "PENDING"
+                outboxDao.updateRetry(entry.id, status, newRetry, nextAttempt, now)
+            }
+        }
+
+        return transmittedCount
     }
 
     // --- Periodic Sync ---
@@ -327,6 +570,7 @@ class SyncCoordinator(
         for ((_, peerInfo) in peers) {
             sendDigest(peerInfo.endpointId)
         }
+        processPendingOutbox()
     }
 
     // --- Conversion Helpers ---
@@ -347,6 +591,7 @@ class SyncCoordinator(
             accuracy = obs.accuracy,
             mapEdgeId = obs.mapEdgeId,
             mapNodeId = obs.mapNodeId,
+            evidenceHash = obs.evidenceHash,
             verificationStatus = obs.verificationStatus,
             observedAtDevice = obs.observedAtDevice,
             relayHopsRemaining = obs.relayHopsRemaining
@@ -369,6 +614,8 @@ class SyncCoordinator(
             accuracy = sync.accuracy,
             mapEdgeId = sync.mapEdgeId,
             mapNodeId = sync.mapNodeId,
+            evidencePath = null,
+            evidenceHash = sync.evidenceHash,
             verificationStatus = sync.verificationStatus,
             observedAtDevice = sync.observedAtDevice,
             receivedAt = receivedAt,

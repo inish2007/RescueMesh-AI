@@ -16,7 +16,7 @@ val AmberDark = Color(0xFFC68400)
 val AmberContainer = Color(0xFF3D2E00)
 
 // --- Status Colors ---
-val GreenSafe = Color(0xFF4CAF50)
+val GreenPassable = Color(0xFF4CAF50)
 val GreenLight = Color(0xFF81C784)
 val GreenContainer = Color(0xFF1B3A1D)
 
@@ -47,3 +47,13 @@ val TextTertiary = Color(0xFF6E7681)
 // --- Functional ---
 val MeshActive = Color(0xFF00E676)
 val MeshInactive = Color(0xFFFF5252)
+
+// --- Aliases for UI Screens ---
+val PrimaryAmber = AmberPrimary
+val StatusOpen = GreenPassable
+val StatusPassable = StatusOpen
+val StatusClear = StatusOpen
+val StatusBlocked = RedBlocked
+val StatusHazard = OrangeHazard
+val StatusConflicted = PurpleConflict
+val StatusUnknown = GrayUnknown

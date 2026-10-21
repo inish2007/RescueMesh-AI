@@ -1,0 +1,481 @@
+{
+  "nodes": [
+    {
+      "id": "MissionEntity",
+      "community": "Data Layer",
+      "importance": 9
+    },
+    {
+      "id": "ObservationEntity",
+      "community": "Data Layer",
+      "importance": 10
+    },
+    {
+      "id": "MapNodeEntity",
+      "community": "Data Layer",
+      "importance": 9
+    },
+    {
+      "id": "MapEdgeEntity",
+      "community": "Data Layer",
+      "importance": 10
+    },
+    {
+      "id": "OutboxEntity",
+      "community": "Data Layer",
+      "importance": 9
+    },
+    {
+      "id": "PeerEntity",
+      "community": "Data Layer",
+      "importance": 8
+    },
+    {
+      "id": "RescueMeshDatabase",
+      "community": "Data Layer",
+      "importance": 10
+    },
+    {
+      "id": "ObservationDao",
+      "community": "Data Layer",
+      "importance": 9
+    },
+    {
+      "id": "MapDao",
+      "community": "Data Layer",
+      "importance": 9
+    },
+    {
+      "id": "OutboxDao",
+      "community": "Data Layer",
+      "importance": 9
+    },
+    {
+      "id": "PeerDao",
+      "community": "Data Layer",
+      "importance": 8
+    },
+    {
+      "id": "MetricsDao",
+      "community": "Data Layer",
+      "importance": 7
+    },
+    {
+      "id": "PriorityScheduler",
+      "community": "Intelligence",
+      "importance": 10
+    },
+    {
+      "id": "MapFusionEngine",
+      "community": "Intelligence",
+      "importance": 10
+    },
+    {
+      "id": "RoutePlanner",
+      "community": "Intelligence",
+      "importance": 9
+    },
+    {
+      "id": "BaselineSchedulers",
+      "community": "Intelligence",
+      "importance": 7
+    },
+    {
+      "id": "SyncMessage",
+      "community": "Protocol",
+      "importance": 10
+    },
+    {
+      "id": "SyncMessageCodec",
+      "community": "Protocol",
+      "importance": 9
+    },
+    {
+      "id": "MeshTransport",
+      "community": "Protocol",
+      "importance": 10
+    },
+    {
+      "id": "NearbyMeshTransport",
+      "community": "Protocol",
+      "importance": 10
+    },
+    {
+      "id": "SyncCoordinator",
+      "community": "Protocol",
+      "importance": 10
+    },
+    {
+      "id": "VirtualMeshEnvironment",
+      "community": "Protocol",
+      "importance": 9
+    },
+    {
+      "id": "SimulatedRescueNode",
+      "community": "Protocol",
+      "importance": 9
+    },
+    {
+      "id": "RescueMeshApp",
+      "community": "UI",
+      "importance": 9
+    },
+    {
+      "id": "MainActivity",
+      "community": "UI",
+      "importance": 9
+    },
+    {
+      "id": "NavGraph",
+      "community": "UI",
+      "importance": 8
+    },
+    {
+      "id": "HomeScreen",
+      "community": "UI",
+      "importance": 8
+    },
+    {
+      "id": "ObservationScreen",
+      "community": "UI",
+      "importance": 8
+    },
+    {
+      "id": "MapScreen",
+      "community": "UI",
+      "importance": 9
+    },
+    {
+      "id": "PeersScreen",
+      "community": "UI",
+      "importance": 8
+    },
+    {
+      "id": "MetricsScreen",
+      "community": "UI",
+      "importance": 7
+    },
+    {
+      "id": "VirtualMeshTransport",
+      "community": "Protocol",
+      "importance": 8
+    },
+    {
+      "id": "FakeObservationDao",
+      "community": "Testing",
+      "importance": 8
+    },
+    {
+      "id": "FakeMapDao",
+      "community": "Testing",
+      "importance": 8
+    },
+    {
+      "id": "FakeOutboxDao",
+      "community": "Testing",
+      "importance": 8
+    },
+    {
+      "id": "VirtualMeshEngineTest",
+      "community": "Testing",
+      "importance": 10
+    },
+    {
+      "id": "EmpiricalBenchmarkTest",
+      "community": "Testing",
+      "importance": 10
+    },
+    {
+      "id": "PrioritySchedulerTest",
+      "community": "Testing",
+      "importance": 8
+    },
+    {
+      "id": "MapFusionEngineTest",
+      "community": "Testing",
+      "importance": 8
+    },
+    {
+      "id": "RoutePlannerTest",
+      "community": "Testing",
+      "importance": 8
+    },
+    {
+      "id": "BenchmarkRunner",
+      "community": "Testing",
+      "importance": 8
+    }
+  ],
+  "edges": [
+    {
+      "source": "RescueMeshDatabase",
+      "target": "MissionEntity"
+    },
+    {
+      "source": "RescueMeshDatabase",
+      "target": "ObservationEntity"
+    },
+    {
+      "source": "RescueMeshDatabase",
+      "target": "MapNodeEntity"
+    },
+    {
+      "source": "RescueMeshDatabase",
+      "target": "MapEdgeEntity"
+    },
+    {
+      "source": "RescueMeshDatabase",
+      "target": "OutboxEntity"
+    },
+    {
+      "source": "RescueMeshDatabase",
+      "target": "PeerEntity"
+    },
+    {
+      "source": "ObservationDao",
+      "target": "ObservationEntity"
+    },
+    {
+      "source": "MapDao",
+      "target": "MapEdgeEntity"
+    },
+    {
+      "source": "MapDao",
+      "target": "MapNodeEntity"
+    },
+    {
+      "source": "OutboxDao",
+      "target": "OutboxEntity"
+    },
+    {
+      "source": "MetricsDao",
+      "target": "MetricsEventEntity"
+    },
+    {
+      "source": "PriorityScheduler",
+      "target": "ObservationEntity"
+    },
+    {
+      "source": "PriorityScheduler",
+      "target": "OutboxEntity"
+    },
+    {
+      "source": "PriorityScheduler",
+      "target": "MapDao"
+    },
+    {
+      "source": "MapFusionEngine",
+      "target": "MapEdgeEntity"
+    },
+    {
+      "source": "MapFusionEngine",
+      "target": "ObservationEntity"
+    },
+    {
+      "source": "RoutePlanner",
+      "target": "MapEdgeEntity"
+    },
+    {
+      "source": "RoutePlanner",
+      "target": "MapNodeEntity"
+    },
+    {
+      "source": "BaselineSchedulers",
+      "target": "OutboxEntity"
+    },
+    {
+      "source": "SyncMessage",
+      "target": "SyncMessageCodec"
+    },
+    {
+      "source": "NearbyMeshTransport",
+      "target": "MeshTransport"
+    },
+    {
+      "source": "SyncCoordinator",
+      "target": "MeshTransport"
+    },
+    {
+      "source": "SyncCoordinator",
+      "target": "ObservationDao"
+    },
+    {
+      "source": "SyncCoordinator",
+      "target": "OutboxDao"
+    },
+    {
+      "source": "SyncCoordinator",
+      "target": "PriorityScheduler"
+    },
+    {
+      "source": "SyncCoordinator",
+      "target": "MapFusionEngine"
+    },
+    {
+      "source": "VirtualMeshTransport",
+      "target": "MeshTransport"
+    },
+    {
+      "source": "SimulatedRescueNode",
+      "target": "PriorityScheduler"
+    },
+    {
+      "source": "SimulatedRescueNode",
+      "target": "MapFusionEngine"
+    },
+    {
+      "source": "SimulatedRescueNode",
+      "target": "RoutePlanner"
+    },
+    {
+      "source": "SimulatedRescueNode",
+      "target": "SyncCoordinator"
+    },
+    {
+      "source": "VirtualMeshEnvironment",
+      "target": "VirtualMeshTransport"
+    },
+    {
+      "source": "SimulatedRescueNode",
+      "target": "VirtualMeshTransport"
+    },
+    {
+      "source": "ObservationRepository",
+      "target": "ObservationDao"
+    },
+    {
+      "source": "ObservationRepository",
+      "target": "OutboxDao"
+    },
+    {
+      "source": "MapRepository",
+      "target": "MapDao"
+    },
+    {
+      "source": "SyncRepository",
+      "target": "MetricsDao"
+    },
+    {
+      "source": "RescueMeshApp",
+      "target": "RescueMeshDatabase"
+    },
+    {
+      "source": "RescueMeshApp",
+      "target": "ObservationRepository"
+    },
+    {
+      "source": "RescueMeshApp",
+      "target": "MapRepository"
+    },
+    {
+      "source": "RescueMeshApp",
+      "target": "SyncRepository"
+    },
+    {
+      "source": "RescueMeshApp",
+      "target": "PriorityScheduler"
+    },
+    {
+      "source": "RescueMeshApp",
+      "target": "MapFusionEngine"
+    },
+    {
+      "source": "RescueMeshApp",
+      "target": "RoutePlanner"
+    },
+    {
+      "source": "RescueMeshApp",
+      "target": "NearbyMeshTransport"
+    },
+    {
+      "source": "RescueMeshApp",
+      "target": "SyncCoordinator"
+    },
+    {
+      "source": "MainActivity",
+      "target": "RescueMeshApp"
+    },
+    {
+      "source": "MainActivity",
+      "target": "MeshTransport"
+    },
+    {
+      "source": "NavGraph",
+      "target": "HomeScreen"
+    },
+    {
+      "source": "NavGraph",
+      "target": "ObservationScreen"
+    },
+    {
+      "source": "NavGraph",
+      "target": "MapScreen"
+    },
+    {
+      "source": "NavGraph",
+      "target": "PeersScreen"
+    },
+    {
+      "source": "NavGraph",
+      "target": "MetricsScreen"
+    },
+    {
+      "source": "MapScreen",
+      "target": "RoutePlanner"
+    },
+    {
+      "source": "HomeScreen",
+      "target": "ObservationEntity"
+    },
+    {
+      "source": "PeersScreen",
+      "target": "PeerEntity"
+    },
+    {
+      "source": "VirtualMeshEngineTest",
+      "target": "SimulatedRescueNode"
+    },
+    {
+      "source": "EmpiricalBenchmarkTest",
+      "target": "SimulatedRescueNode"
+    },
+    {
+      "source": "PrioritySchedulerTest",
+      "target": "PriorityScheduler"
+    },
+    {
+      "source": "MapFusionEngineTest",
+      "target": "MapFusionEngine"
+    },
+    {
+      "source": "RoutePlannerTest",
+      "target": "RoutePlanner"
+    },
+    {
+      "source": "SyncMessageCodecTest",
+      "target": "SyncMessageCodec"
+    },
+    {
+      "source": "VirtualMeshSimulationTest",
+      "target": "VirtualMeshTransport"
+    },
+    {
+      "source": "FakeDaosConcurrencyTest",
+      "target": "FakeObservationDao"
+    },
+    {
+      "source": "BenchmarkRunnerTest",
+      "target": "BenchmarkRunner"
+    },
+    {
+      "source": "EmpiricalBenchmarkTest",
+      "target": "PriorityScheduler"
+    }
+  ],
+  "metadata": {
+    "project": "RescueMesh AI",
+    "timestamp": "2026-10-20",
+    "nodes": 41,
+    "edges": 66
+  }
+}

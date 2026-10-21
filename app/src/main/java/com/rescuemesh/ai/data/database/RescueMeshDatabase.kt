@@ -18,7 +18,7 @@ import com.rescuemesh.ai.data.entity.*
         DeliveryReceiptEntity::class,
         MetricsEventEntity::class
     ],
-    version = 1,
+    version = 4,
     exportSchema = false
 )
 abstract class RescueMeshDatabase : RoomDatabase() {
@@ -28,10 +28,45 @@ abstract class RescueMeshDatabase : RoomDatabase() {
     abstract fun peerDao(): PeerDao
     abstract fun outboxDao(): OutboxDao
     abstract fun metricsDao(): MetricsDao
+    abstract fun missionDao(): MissionDao
 
     companion object {
         @Volatile
         private var INSTANCE: RescueMeshDatabase? = null
+
+        val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS missions (
+                        missionId TEXT PRIMARY KEY NOT NULL,
+                        name TEXT NOT NULL,
+                        pairingCode TEXT NOT NULL,
+                        sector TEXT NOT NULL,
+                        isActive INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE observations ADD COLUMN evidenceHash TEXT DEFAULT NULL")
+            }
+        }
+
+        val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                try {
+                    db.execSQL("ALTER TABLE outbox ADD COLUMN retryCount INTEGER NOT NULL DEFAULT 0")
+                } catch (_: Exception) {
+                    // In case retryCount is already present in certain schemas
+                }
+                db.execSQL("ALTER TABLE outbox ADD COLUMN nextAttemptAt INTEGER NOT NULL DEFAULT 0")
+            }
+        }
 
         fun getInstance(context: Context): RescueMeshDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -40,6 +75,7 @@ abstract class RescueMeshDatabase : RoomDatabase() {
                     RescueMeshDatabase::class.java,
                     "rescuemesh_database"
                 )
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

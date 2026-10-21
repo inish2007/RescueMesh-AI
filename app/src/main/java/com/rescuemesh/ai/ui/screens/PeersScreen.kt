@@ -87,7 +87,7 @@ fun PeersScreen(
                                     modifier = Modifier
                                         .size(10.dp)
                                         .clip(CircleShape)
-                                        .background(if (isAdvertising || isDiscovering) StatusSafe else StatusBlocked)
+                                        .background(if (isAdvertising || isDiscovering) StatusClear else StatusBlocked)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
@@ -117,12 +117,12 @@ fun PeersScreen(
                             Text(
                                 text = "Advertising: ${if (isAdvertising) "ON" else "OFF"}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (isAdvertising) StatusSafe else TextTertiary
+                                color = if (isAdvertising) StatusClear else TextTertiary
                             )
                             Text(
                                 text = "Discovering: ${if (isDiscovering) "ON" else "OFF"}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (isDiscovering) StatusSafe else TextTertiary
+                                color = if (isDiscovering) StatusClear else TextTertiary
                             )
                             Text(
                                 text = "Cluster P2P",
@@ -202,7 +202,7 @@ fun PeerCard(peer: PeerEntity) {
                         modifier = Modifier
                             .size(10.dp)
                             .clip(CircleShape)
-                            .background(if (peer.isConnected) StatusSafe else TextTertiary)
+                            .background(if (peer.isConnected) StatusClear else TextTertiary)
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
@@ -221,13 +221,13 @@ fun PeerCard(peer: PeerEntity) {
                 }
 
                 Surface(
-                    color = if (peer.isConnected) StatusSafe.copy(alpha = 0.15f) else SurfaceVariant,
+                    color = if (peer.isConnected) StatusClear.copy(alpha = 0.15f) else SurfaceVariant,
                     shape = RoundedCornerShape(6.dp)
                 ) {
                     Text(
                         text = if (peer.isConnected) "CONNECTED" else "OFFLINE",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (peer.isConnected) StatusSafe else TextTertiary,
+                        color = if (peer.isConnected) StatusClear else TextTertiary,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )

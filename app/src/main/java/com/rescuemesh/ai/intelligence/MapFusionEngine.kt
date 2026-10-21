@@ -45,8 +45,9 @@ class MapFusionEngine(
 
         val edge = mapDao.getEdge(edgeId) ?: return null
         val previousStatus = edge.routeStatus
+        val isVerified = observation.verificationStatus.equals("VERIFIED", ignoreCase = true)
 
-        val (newStatus, conflictIds) = resolveStatus(edge, reportedStatus, observation.eventId)
+        val (newStatus, conflictIds) = resolveStatus(edge, reportedStatus, observation.eventId, isVerified)
 
         mapDao.updateEdgeStatus(
             edgeId = edgeId,
@@ -71,7 +72,8 @@ class MapFusionEngine(
     private fun resolveStatus(
         edge: MapEdgeEntity,
         reportedStatus: String,
-        observationId: String
+        observationId: String,
+        isVerified: Boolean = false
     ): Pair<String, List<String>> {
         val currentStatus = edge.routeStatus
         val existingConflicts = edge.conflictingObservationIds
@@ -80,11 +82,21 @@ class MapFusionEngine(
             ?.toMutableList()
             ?: mutableListOf()
 
+        // Human-verified survey resolves conflicts and sets verified status
+        if (isVerified) {
+            val resolvedStatus = when (reportedStatus.uppercase()) {
+                "BLOCKED", "HAZARD", "REPORTED_BLOCKED", "VERIFIED_BLOCKED" -> "VERIFIED_BLOCKED"
+                else -> "VERIFIED_OPEN"
+            }
+            existingConflicts.add(observationId)
+            return resolvedStatus to existingConflicts
+        }
+
         return when {
             // Unknown → first report sets it
             currentStatus == "UNKNOWN" -> {
                 val newStatus = when (reportedStatus) {
-                    "OPEN", "SAFE" -> "REPORTED_OPEN"
+                    "OPEN", "CLEAR" -> "REPORTED_OPEN"
                     "BLOCKED" -> "REPORTED_BLOCKED"
                     "HAZARD" -> "REPORTED_BLOCKED"  // Treat hazard as blocked for routing
                     else -> "REPORTED_OPEN"
@@ -99,7 +111,7 @@ class MapFusionEngine(
             }
 
             // Same direction → reinforce (no conflict)
-            (currentStatus == "REPORTED_OPEN" && reportedStatus in listOf("OPEN", "SAFE")) ||
+            (currentStatus == "REPORTED_OPEN" && reportedStatus in listOf("OPEN", "CLEAR")) ||
             (currentStatus == "REPORTED_BLOCKED" && reportedStatus in listOf("BLOCKED", "HAZARD")) -> {
                 existingConflicts.add(observationId)
                 currentStatus to existingConflicts
@@ -107,7 +119,7 @@ class MapFusionEngine(
 
             // Different direction → CONFLICT
             (currentStatus == "REPORTED_OPEN" && reportedStatus in listOf("BLOCKED", "HAZARD")) ||
-            (currentStatus == "REPORTED_BLOCKED" && reportedStatus in listOf("OPEN", "SAFE")) -> {
+            (currentStatus == "REPORTED_BLOCKED" && reportedStatus in listOf("OPEN", "CLEAR")) -> {
                 existingConflicts.add(observationId)
                 if (edge.lastObservationId != null && !existingConflicts.contains(edge.lastObservationId)) {
                     existingConflicts.add(0, edge.lastObservationId)

@@ -29,11 +29,20 @@ interface OutboxDao {
     @Query("UPDATE outbox SET status = :status, lastAttemptAt = :attemptAt, retryCount = retryCount + 1 WHERE id = :id")
     suspend fun updateStatus(id: Long, status: String, attemptAt: Long = System.currentTimeMillis())
 
+    @Query("UPDATE outbox SET status = :status, lastAttemptAt = :attemptAt WHERE eventId = :eventId")
+    suspend fun updateStatusByEvent(eventId: String, status: String, attemptAt: Long = System.currentTimeMillis())
+
     @Query("UPDATE outbox SET priority = :priority, schedulerType = :schedulerType WHERE id = :id")
     suspend fun updatePriority(id: Long, priority: Float, schedulerType: String)
 
     @Query("DELETE FROM outbox WHERE status = 'DELIVERED'")
     suspend fun clearDelivered()
+
+    @Query("UPDATE outbox SET status = 'PENDING' WHERE status = 'SENDING'")
+    suspend fun resetOrphanedSendingToPending(): Int
+
+    @Query("UPDATE outbox SET status = :status, retryCount = :retryCount, nextAttemptAt = :nextAttemptAt, lastAttemptAt = :attemptAt WHERE id = :id")
+    suspend fun updateRetry(id: Long, status: String, retryCount: Int, nextAttemptAt: Long, attemptAt: Long = System.currentTimeMillis())
 
     /**
      * Check if we already have an outbox entry for this event+peer combination.
