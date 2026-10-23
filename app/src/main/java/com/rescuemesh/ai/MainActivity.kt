@@ -70,7 +70,7 @@ class MainActivity : ComponentActivity() {
                     }
 
                     RescueMeshNavHost(
-                        homeScreen = {
+                        homeScreen = { onNavigateToObservation ->
                             HomeScreen(
                                 missionId = app.missionId,
                                 deviceId = app.deviceId,
@@ -78,7 +78,29 @@ class MainActivity : ComponentActivity() {
                                 observations = observations,
                                 onNewObservationClick = {
                                     // Handled by navigation or tab switch
-                                }
+                                },
+                                onBroadcastSos = {
+                                    coroutineScope.launch {
+                                        val loc = deviceLocation ?: app.locationProvider.getLastKnownLocation()
+                                        val obs = app.observationRepository.createObservation(
+                                            eventType = "SOS",
+                                            title = "EMERGENCY SOS",
+                                            description = "Immediate emergency assistance requested via mesh broadcast",
+                                            reportedStatus = "HAZARD",
+                                            latitude = loc?.latitude,
+                                            longitude = loc?.longitude,
+                                            accuracy = loc?.accuracy
+                                        )
+                                        app.syncCoordinator.onNewLocalObservation(obs)
+                                        app.mapFusionEngine.applyObservation(obs)
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "Emergency SOS: Saved locally on this phone • Queued for mesh transfer",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                },
+                                onObservationClick = onNavigateToObservation
                             )
                         },
                         observationsScreen = {
@@ -106,10 +128,13 @@ class MainActivity : ComponentActivity() {
                                 }
                             )
                         },
-                        mapScreen = {
+                        mapScreen = { onNavigateToObservation ->
                             MapScreen(
                                 nodes = nodes,
                                 edges = edges,
+                                observations = observations,
+                                userLocation = deviceLocation,
+                                onNavigateToObservationDetail = onNavigateToObservation,
                                 onFindRoute = { from, to ->
                                     runBlocking {
                                         app.routePlanner.findRoute(
@@ -155,6 +180,13 @@ class MainActivity : ComponentActivity() {
                                 onExportAuditLog = {
                                     Toast.makeText(this@MainActivity, "Audit log exported to local storage", Toast.LENGTH_SHORT).show()
                                 }
+                            )
+                        },
+                        observationDetailScreen = { eventId, onBackClick ->
+                            val obs = observations.find { it.eventId == eventId }
+                            ObservationDetailScreen(
+                                observation = obs,
+                                onBackClick = onBackClick
                             )
                         }
                     )

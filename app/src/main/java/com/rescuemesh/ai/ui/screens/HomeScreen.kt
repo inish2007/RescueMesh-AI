@@ -2,6 +2,7 @@ package com.rescuemesh.ai.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -19,8 +20,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.rescuemesh.ai.RescueMeshApp
-import com.rescuemesh.ai.data.entity.MissionEntity
-import com.rescuemesh.ai.data.entity.ObservationEntity
+import com.rescuemesh.ai.data.entity.*
 import com.rescuemesh.ai.ui.theme.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -38,7 +38,9 @@ fun HomeScreen(
     activeMissionName: String? = null,
     pairingCode: String? = null,
     onSwitchMission: ((String) -> Unit)? = null,
-    onCreateMission: ((name: String, pairingCode: String, description: String) -> Unit)? = null
+    onCreateMission: ((name: String, pairingCode: String, description: String) -> Unit)? = null,
+    onBroadcastSos: (() -> Unit)? = null,
+    onObservationClick: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as? RescueMeshApp
@@ -220,6 +222,70 @@ fun HomeScreen(
                     }
                 }
             }
+            // Tactical Emergency SOS Quick-Broadcast Action Card
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF2E1518)),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, StatusBlocked.copy(alpha = 0.6f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(StatusBlocked.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Warning,
+                                    contentDescription = "Emergency SOS",
+                                    tint = StatusBlocked,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "EMERGENCY SOS",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "Saved locally on this phone • Queued for mesh transfer (P >= 0.80). Does not guarantee rescue dispatch.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+
+                        Button(
+                            onClick = { onBroadcastSos?.invoke() ?: onNewObservationClick() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = StatusBlocked,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text("TRANSMIT SOS", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
             // Status Banner
             item {
                 Card(
@@ -314,7 +380,10 @@ fun HomeScreen(
                 }
             } else {
                 items(observations, key = { it.eventId }) { obs ->
-                    ObservationFeedCard(obs)
+                    ObservationFeedCard(
+                        obs = obs,
+                        onClick = onObservationClick?.let { { it(obs.eventId) } }
+                    )
                 }
             }
         }
@@ -585,8 +654,12 @@ fun HomeScreen(
 }
 
 @Composable
-fun ObservationFeedCard(obs: ObservationEntity) {
-    val statusColor = when (obs.reportedStatus) {
+fun ObservationFeedCard(
+    obs: ObservationEntity,
+    onClick: (() -> Unit)? = null
+) {
+    val isSos = obs.eventType == "SOS"
+    val statusColor = if (isSos) StatusBlocked else when (obs.reportedStatus) {
         "OPEN", "CLEAR" -> StatusClear
         "BLOCKED", "COLLAPSED" -> StatusBlocked
         "HAZARD", "DANGER" -> StatusHazard
@@ -595,16 +668,29 @@ fun ObservationFeedCard(obs: ObservationEntity) {
     }
 
     val typeIcon = when (obs.eventType) {
-        "HAZARD" -> Icons.Filled.Warning
+        "SOS", "HAZARD" -> Icons.Filled.Warning
         "ROUTE_STATUS" -> Icons.Filled.AltRoute
         "PHOTO" -> Icons.Filled.CameraAlt
         else -> Icons.Filled.Note
     }
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSos) Color(0xFF281215) else SurfaceDark
+        ),
         shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth()
+        border = if (isSos) BorderStroke(1.dp, StatusBlocked.copy(alpha = 0.5f)) else BorderStroke(1.dp, SurfaceBorder.copy(alpha = 0.5f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(onClick = onClick)
+                } else {
+                    Modifier
+                }
+            )
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(
@@ -612,7 +698,10 @@ fun ObservationFeedCard(obs: ObservationEntity) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
                     Icon(
                         imageVector = typeIcon,
                         contentDescription = null,
@@ -627,17 +716,42 @@ fun ObservationFeedCard(obs: ObservationEntity) {
                         color = TextPrimary
                     )
                 }
-                obs.reportedStatus?.let { status ->
+                val badgeText = if (isSos) "EMERGENCY SOS" else obs.reportedStatus
+                badgeText?.let { text ->
                     Surface(
                         color = statusColor.copy(alpha = 0.15f),
                         shape = RoundedCornerShape(6.dp)
                     ) {
                         Text(
-                            text = status,
+                            text = text,
                             style = MaterialTheme.typography.labelSmall,
                             color = statusColor,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+
+            if (isSos) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    color = Color(0xFF381417),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                        Text(
+                            text = if (obs.isLocal) "Status: Saved locally on this phone • Queued for mesh transfer"
+                            else "Status: Received from mesh peer ${obs.authorDeviceId.take(8)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = PrimaryAmber,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Mesh delivery does not guarantee responder dispatch.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextTertiary
                         )
                     }
                 }
@@ -650,6 +764,66 @@ fun ObservationFeedCard(obs: ObservationEntity) {
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary
                 )
+            }
+
+            if (obs.hasEvidence) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.CameraAlt,
+                        contentDescription = "Photo Evidence",
+                        tint = if (obs.verificationStatus == "VERIFIED") StatusClear else PrimaryAmber,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Photo Evidence: ${obs.verificationStatus}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (obs.verificationStatus == "VERIFIED") StatusClear else PrimaryAmber,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.LocationOn,
+                    contentDescription = null,
+                    tint = if (obs.latitude != null) PrimaryAmber else TextTertiary,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                if (obs.latitude != null && obs.longitude != null) {
+                    val accText = obs.accuracy?.let { " (±${it.toInt()}m)" } ?: ""
+                    Text(
+                        text = "GPS: ${String.format(Locale.US, "%.5f, %.5f", obs.latitude, obs.longitude)}$accText",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
+                    )
+                } else {
+                    Text(
+                        text = "UNKNOWN Location (Indoor / GPS Pending)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextTertiary
+                    )
+                }
+            }
+
+            if (onClick != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "View details & evidence ➔",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = PrimaryAmber,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
