@@ -13,6 +13,10 @@ import com.rescuemesh.ai.intelligence.PriorityScheduler
 import com.rescuemesh.ai.model.PeerInfo
 import com.rescuemesh.ai.model.SyncMessage
 import com.rescuemesh.ai.model.SyncObservation
+import java.io.File
+import java.io.FileInputStream
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
@@ -38,7 +42,8 @@ class SyncCoordinator(
     private val scheduler: PriorityScheduler,
     private val mapFusionEngine: MapFusionEngine? = null,
     private val deviceId: String,
-    private val missionId: String
+    private val missionId: String,
+    evidenceDir: File? = null
 ) {
     companion object {
         private const val TAG = "SyncCoordinator"
@@ -57,6 +62,23 @@ class SyncCoordinator(
             return minOf(BASE_BACKOFF_MS * (1L shl shift), MAX_BACKOFF_MS)
         }
     }
+
+    private val evidenceDirectory: File = evidenceDir ?: run {
+        val base = try {
+            val app = Class.forName("android.app.ActivityThread")
+                .getMethod("currentApplication")
+                .invoke(null) as? android.app.Application
+            app?.filesDir ?: File(System.getProperty("java.io.tmpdir") ?: ".", "evidence")
+        } catch (_: Throwable) {
+            File(System.getProperty("java.io.tmpdir") ?: ".", "evidence")
+        }
+        File(base, "evidence").apply { if (!exists()) mkdirs() }
+    }
+
+    // Correlation mappings: payloadId -> EvidenceHeader
+    private val headersByPayloadId = ConcurrentHashMap<Long, SyncMessage.EvidenceHeader>()
+    // Out-of-order completed files: payloadId -> IncomingFileTransfer
+    private val pendingFilesByPayloadId = ConcurrentHashMap<Long, IncomingFileTransfer>()
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var syncJob: Job? = null
@@ -113,6 +135,21 @@ class SyncCoordinator(
             }
         }
 
+        // Listen for incoming file payload transfers (Stage 2)
+        scope.launch {
+            transport.incomingFiles.collect { transfer ->
+                if (transfer != null) {
+                    try {
+                        handleIncomingFile(transfer)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error handling incoming file payload ${transfer.payloadId}", e)
+                    }
+                }
+            }
+        }
+
         // Set up peer connection callbacks
         transport.setOnPeerConnected { peerDeviceId, peerInfo ->
             scope.launch {
@@ -126,6 +163,20 @@ class SyncCoordinator(
             scope.launch {
                 Log.i(TAG, "Peer disconnected: $peerDeviceId")
                 syncRepo.recordDisconnection(peerDeviceId)
+                // Zero orphan policy: clean up any buffered pending files from disconnected peer
+                val endpoint = transport.getEndpointForDevice(peerDeviceId)
+                if (endpoint != null) {
+                    val it = pendingFilesByPayloadId.entries.iterator()
+                    while (it.hasNext()) {
+                        val entry = it.next()
+                        if (entry.value.endpointId == endpoint) {
+                            if (entry.value.file.exists()) {
+                                entry.value.file.delete()
+                            }
+                            it.remove()
+                        }
+                    }
+                }
             }
         }
 
@@ -143,6 +194,8 @@ class SyncCoordinator(
     fun stop() {
         syncJob?.cancel()
         scope.cancel()
+        headersByPayloadId.clear()
+        pendingFilesByPayloadId.clear()
         Log.i(TAG, "SyncCoordinator stopped")
     }
 
@@ -198,15 +251,15 @@ class SyncCoordinator(
             }
 
             is SyncMessage.EvidenceRequest -> {
-                // Handled in Stage 2 by Agent A
+                handleEvidenceRequest(endpointId, message)
             }
 
             is SyncMessage.EvidenceHeader -> {
-                // Handled in Stage 2 by Agent A
+                handleEvidenceHeader(endpointId, message)
             }
 
             is SyncMessage.EvidenceAck -> {
-                // Handled in Stage 2 by Agent A
+                handleEvidenceAck(endpointId, message)
             }
         }
     }
@@ -359,45 +412,81 @@ class SyncCoordinator(
      */
     suspend fun handleEventBatch(endpointId: String, batch: SyncMessage.EventBatch): SyncMessage.EventAck {
         val newEventIds = mutableListOf<String>()
+        val acceptedEvents = mutableListOf<SyncObservation>()
         val receivedAt = System.currentTimeMillis()
         val totalBytes = transport.getBytesSent(batch)
         syncRepo.recordBytesReceived(batch.senderDeviceId, totalBytes)
 
         for (syncObs in batch.events) {
+            // Mission isolation validation: foreign mission observations are dropped immediately
+            if (syncObs.missionId != this.missionId) {
+                Log.w(TAG, "Dropped observation ${syncObs.eventId}: foreign mission ${syncObs.missionId} != this $missionId")
+                continue
+            }
+            acceptedEvents.add(syncObs)
+
             // Duplicate suppression
-            if (observationDao.exists(syncObs.eventId)) continue
+            val alreadyExists = observationDao.exists(syncObs.eventId)
+            val observation = if (alreadyExists) {
+                observationDao.getById(syncObs.eventId)
+            } else {
+                val newObs = syncToObservation(syncObs, receivedAt)
+                observationDao.insert(newObs)
+                newEventIds.add(syncObs.eventId)
 
-            val observation = syncToObservation(syncObs, receivedAt)
-            observationDao.insert(observation)
-            newEventIds.add(syncObs.eventId)
+                // Bridge to MapFusionEngine for conflict detection and edge state update
+                mapFusionEngine?.let { engine ->
+                    val fusionResult = engine.applyObservation(newObs)
+                    if (fusionResult != null) {
+                        if (fusionResult.isConflict) {
+                            Log.w(TAG, "Map conflict detected on edge ${fusionResult.edgeId}: ${fusionResult.conflictingIds}")
+                        } else {
+                            Log.d(TAG, "Edge ${fusionResult.edgeId} updated to ${fusionResult.newStatus}")
+                        }
+                    }
+                }
 
-            // Bridge to MapFusionEngine for conflict detection and edge state update
-            mapFusionEngine?.let { engine ->
-                val fusionResult = engine.applyObservation(observation)
-                if (fusionResult != null) {
-                    if (fusionResult.isConflict) {
-                        Log.w(TAG, "Map conflict detected on edge ${fusionResult.edgeId}: ${fusionResult.conflictingIds}")
-                    } else {
-                        Log.d(TAG, "Edge ${fusionResult.edgeId} updated to ${fusionResult.newStatus}")
+                // Record receive metric
+                syncRepo.recordReceive(syncObs.eventId, batch.senderDeviceId, totalBytes / maxOf(1, batch.events.size))
+
+                // Relay to other connected peers if hops remaining
+                if (syncObs.relayHopsRemaining > 0) {
+                    relayToOtherPeers(newObs, endpointId)
+                }
+                newObs
+            }
+
+            // Stage 2 On-Demand Evidence Transfer:
+            // When receiving a SyncObservation with evidenceHash != null: check if local observation
+            // has evidencePath != null and file exists. If missing, queue or send SyncMessage.EvidenceRequest
+            if (!syncObs.evidenceHash.isNullOrBlank()) {
+                val hasLocalFile = observation?.evidencePath?.let { path ->
+                    val f = File(path)
+                    f.exists() && f.isFile && f.length() > 0L
+                } ?: false
+
+                if (!hasLocalFile) {
+                    val targetEndpoint = if (endpointId.isNotEmpty()) endpointId
+                        else transport.getEndpointForDevice(batch.senderDeviceId)
+                    if (targetEndpoint != null && targetEndpoint.isNotEmpty()) {
+                        val evidenceReq = SyncMessage.EvidenceRequest(
+                            missionId = this.missionId,
+                            eventId = syncObs.eventId,
+                            evidenceHash = syncObs.evidenceHash
+                        )
+                        transport.sendMessage(targetEndpoint, evidenceReq)
+                        Log.i(TAG, "Requested missing evidence for event ${syncObs.eventId} (hash: ${syncObs.evidenceHash}) from $targetEndpoint")
                     }
                 }
             }
-
-            // Record receive metric
-            syncRepo.recordReceive(syncObs.eventId, batch.senderDeviceId, totalBytes / maxOf(1, batch.events.size))
-
-            // Relay to other connected peers if hops remaining
-            if (syncObs.relayHopsRemaining > 0) {
-                relayToOtherPeers(observation, endpointId)
-            }
         }
 
-        // Send ACK back for all events in the non-empty batch so sender resolves outbox / retries
+        // Send ACK back for all accepted events in the batch
         val ack = SyncMessage.EventAck(
             deviceId = deviceId,
-            acknowledgedEventIds = batch.events.map { it.eventId }
+            acknowledgedEventIds = acceptedEvents.map { it.eventId }
         )
-        if (endpointId.isNotEmpty() && batch.events.isNotEmpty()) {
+        if (endpointId.isNotEmpty() && acceptedEvents.isNotEmpty()) {
             transport.sendMessage(endpointId, ack)
         }
 
@@ -613,5 +702,176 @@ class SyncCoordinator(
             isLocal = false,
             relayHopsRemaining = sync.relayHopsRemaining
         )
+    }
+
+    // --- Stage 2 On-Demand Evidence Transfer ---
+
+    suspend fun handleEvidenceRequest(endpointId: String, request: SyncMessage.EvidenceRequest) {
+        if (request.missionId != this.missionId) {
+            Log.w(TAG, "Rejected EvidenceRequest for ${request.eventId}: foreign mission ${request.missionId} != this $missionId")
+            return
+        }
+
+        // Absolute SOS Priority Invariant:
+        // Urgent packets (P >= 0.80) strictly preempt photo transfers
+        val pending = outboxDao.getPendingByPriority()
+        if (pending.any { it.priority >= SAFETY_PRIORITY_FLOOR }) {
+            Log.i(TAG, "Urgent outbox messages (P >= $SAFETY_PRIORITY_FLOOR) waiting. Draining outbox before serving evidence request.")
+            processPendingOutbox()
+        }
+
+        val observation = observationDao.getById(request.eventId)
+        val evidencePath = observation?.evidencePath
+        val file = if (evidencePath != null) File(evidencePath) else null
+
+        if (file != null && file.exists() && file.isFile && file.length() > 0L) {
+            val payloadId = transport.sendFilePayload(endpointId, file)
+            if (payloadId != null) {
+                val header = SyncMessage.EvidenceHeader(
+                    missionId = this.missionId,
+                    eventId = request.eventId,
+                    evidenceHash = request.evidenceHash,
+                    payloadId = payloadId,
+                    fileSizeBytes = file.length()
+                )
+                transport.sendMessage(endpointId, header)
+                Log.i(TAG, "Dispatched EvidenceHeader and file payload ($payloadId, ${file.length()} bytes) for event ${request.eventId} to $endpointId")
+            } else {
+                Log.e(TAG, "Failed to send file payload for event ${request.eventId} to $endpointId")
+            }
+        } else {
+            Log.w(TAG, "Cannot serve EvidenceRequest: observation file not found or empty on disk for event ${request.eventId} ($evidencePath)")
+        }
+    }
+
+    suspend fun handleEvidenceHeader(endpointId: String, header: SyncMessage.EvidenceHeader) {
+        if (header.missionId != this.missionId) {
+            Log.w(TAG, "Rejected EvidenceHeader for event ${header.eventId}: foreign mission ${header.missionId} != this $missionId")
+            return
+        }
+
+        Log.d(TAG, "Received EvidenceHeader for event ${header.eventId}, payload ${header.payloadId}, hash ${header.evidenceHash}")
+        val pendingTransfer = pendingFilesByPayloadId.remove(header.payloadId)
+        if (pendingTransfer != null && pendingTransfer.isComplete) {
+            verifyAndStoreEvidence(endpointId, header, pendingTransfer.file)
+        } else {
+            headersByPayloadId[header.payloadId] = header
+        }
+    }
+
+    suspend fun handleIncomingFile(transfer: IncomingFileTransfer) {
+        val payloadId = transfer.payloadId
+        val endpointId = transfer.endpointId
+        val tempFile = transfer.file
+
+        if (transfer.isFailed) {
+            Log.w(TAG, "Incoming file transfer failed for payload $payloadId from $endpointId")
+            if (tempFile.exists()) {
+                tempFile.delete()
+            }
+            val header = headersByPayloadId.remove(payloadId)
+            if (header != null) {
+                observationDao.updateEvidence(header.eventId, null, "CORRUPTED")
+                val ack = SyncMessage.EvidenceAck(
+                    missionId = this.missionId,
+                    eventId = header.eventId,
+                    evidenceHash = header.evidenceHash,
+                    verified = false
+                )
+                transport.sendMessage(endpointId, ack)
+            }
+            pendingFilesByPayloadId.remove(payloadId)
+            return
+        }
+
+        if (transfer.isComplete) {
+            val header = headersByPayloadId.remove(payloadId)
+            if (header == null) {
+                Log.d(TAG, "File payload $payloadId completed before EvidenceHeader received. Buffering...")
+                pendingFilesByPayloadId[payloadId] = transfer
+            } else {
+                verifyAndStoreEvidence(endpointId, header, tempFile)
+            }
+        }
+    }
+
+    suspend fun verifyAndStoreEvidence(endpointId: String, header: SyncMessage.EvidenceHeader, tempFile: File) {
+        if (!tempFile.exists() || !tempFile.isFile || tempFile.length() == 0L) {
+            Log.w(TAG, "Evidence file empty or missing for event ${header.eventId}, payload ${header.payloadId}")
+            if (tempFile.exists()) tempFile.delete()
+            observationDao.updateEvidence(header.eventId, null, "CORRUPTED")
+            val ack = SyncMessage.EvidenceAck(
+                missionId = this.missionId,
+                eventId = header.eventId,
+                evidenceHash = header.evidenceHash,
+                verified = false
+            )
+            transport.sendMessage(endpointId, ack)
+            return
+        }
+
+        val computedHash = computeSha256(tempFile)
+        if (computedHash.equals(header.evidenceHash, ignoreCase = true)) {
+            if (!evidenceDirectory.exists()) {
+                evidenceDirectory.mkdirs()
+            }
+            val destinationFile = File(evidenceDirectory, "evidence_${header.eventId}_${header.evidenceHash.take(8)}.jpg")
+            try {
+                tempFile.copyTo(destinationFile, overwrite = true)
+                tempFile.delete()
+                observationDao.updateEvidence(header.eventId, destinationFile.absolutePath, "VERIFIED")
+                val ack = SyncMessage.EvidenceAck(
+                    missionId = this.missionId,
+                    eventId = header.eventId,
+                    evidenceHash = header.evidenceHash,
+                    verified = true
+                )
+                transport.sendMessage(endpointId, ack)
+                Log.i(TAG, "Evidence verified and committed: ${destinationFile.absolutePath} (event ${header.eventId})")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to copy verified evidence file to ${destinationFile.absolutePath}", e)
+                observationDao.updateEvidence(header.eventId, null, "CORRUPTED")
+                val ack = SyncMessage.EvidenceAck(
+                    missionId = this.missionId,
+                    eventId = header.eventId,
+                    evidenceHash = header.evidenceHash,
+                    verified = false
+                )
+                transport.sendMessage(endpointId, ack)
+            }
+        } else {
+            Log.w(TAG, "Evidence SHA-256 mismatch for event ${header.eventId}: expected ${header.evidenceHash}, computed $computedHash")
+            if (tempFile.exists()) {
+                tempFile.delete()
+            }
+            observationDao.updateEvidence(header.eventId, null, "CORRUPTED")
+            val ack = SyncMessage.EvidenceAck(
+                missionId = this.missionId,
+                eventId = header.eventId,
+                evidenceHash = header.evidenceHash,
+                verified = false
+            )
+            transport.sendMessage(endpointId, ack)
+        }
+    }
+
+    suspend fun handleEvidenceAck(endpointId: String, ack: SyncMessage.EvidenceAck) {
+        if (ack.missionId != this.missionId) {
+            Log.w(TAG, "Rejected EvidenceAck for ${ack.eventId}: foreign mission ${ack.missionId} != this $missionId")
+            return
+        }
+        Log.i(TAG, "Received EvidenceAck from $endpointId for event ${ack.eventId}: verified=${ack.verified}")
+    }
+
+    private fun computeSha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { input ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (input.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 }

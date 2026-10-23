@@ -147,4 +147,39 @@ class ObservationRepository(
 
     suspend fun getAll(): List<ObservationEntity> =
         observationDao.getAll(currentMissionId)
+
+    /**
+     * Attaches verified evidence to an existing observation after SHA-256 validation.
+     * Updates local database state with the absolute file path and verification status.
+     * If file does not exist, is empty, or hash does not match, sets status to CORRUPTED.
+     */
+    suspend fun attachVerifiedEvidence(eventId: String, file: java.io.File, expectedHash: String): Boolean {
+        if (!file.exists() || !file.isFile || file.length() == 0L) {
+            if (file.exists() && file.isFile) file.delete()
+            observationDao.updateEvidence(eventId, null, "CORRUPTED")
+            return false
+        }
+
+        val computedHash = computeSha256(file)
+        return if (computedHash.equals(expectedHash, ignoreCase = true)) {
+            observationDao.updateEvidence(eventId, file.absolutePath, "VERIFIED")
+            true
+        } else {
+            file.delete()
+            observationDao.updateEvidence(eventId, null, "CORRUPTED")
+            false
+        }
+    }
+
+    private fun computeSha256(file: java.io.File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        java.io.FileInputStream(file).use { input ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (input.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
 }

@@ -13,8 +13,13 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.Executor
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.CancellationException
+import kotlin.coroutines.resume
 
 /**
  * Concrete mesh transport layer wrapping Google Nearby Connections API.
@@ -33,6 +38,8 @@ class NearbyMeshTransport(
     val missionIdProvider: () -> String = { "" },
     nearbyConnectionsOverride: ConnectionsClient? = null
 ) : MeshTransport {
+
+    var payloadFileFactory: (File) -> Payload = { Payload.fromFile(it) }
 
     // Secondary constructors for backward compatibility
     constructor(context: Context) : this(context, { "" }, null)
@@ -63,6 +70,11 @@ class NearbyMeshTransport(
 
     private val _incomingMessages = MutableSharedFlow<Pair<String, SyncMessage>>(extraBufferCapacity = 64)
     override val incomingMessages: SharedFlow<Pair<String, SyncMessage>> = _incomingMessages.asSharedFlow()
+
+    private val _incomingFiles = MutableStateFlow<IncomingFileTransfer?>(null)
+    override val incomingFiles: StateFlow<IncomingFileTransfer?> = _incomingFiles.asStateFlow()
+
+    private val incomingFilePayloads = ConcurrentHashMap<Long, Pair<String, File>>()
 
     private val _meshState = MutableStateFlow(MeshState.STOPPED)
     override val meshState: StateFlow<MeshState> = _meshState.asStateFlow()
@@ -99,6 +111,8 @@ class NearbyMeshTransport(
         connectedEndpoints.clear()
         _connectedPeers.value = emptyMap()
         endpointToDeviceId.clear()
+        incomingFilePayloads.clear()
+        _incomingFiles.value = null
         _meshState.value = MeshState.STOPPED
 
         Log.i(TAG, "Mesh stopped")
@@ -132,7 +146,22 @@ class NearbyMeshTransport(
             Log.w(TAG, "Cannot send ${message::class.simpleName} to unauthenticated endpoint $endpointId")
             return false
         }
-        return sendPayloadDirectly(endpointId, message)
+        return try {
+            val bytes = SyncMessageCodec.serialize(message)
+            val task = nearbyConnections.sendPayload(endpointId, Payload.fromBytes(bytes))
+            val sent = suspendCancellableCoroutine<Boolean> { continuation ->
+                task.addOnCompleteListener(Executor { it.run() }) { result ->
+                    if (continuation.isActive) continuation.resume(result.isSuccessful)
+                }
+            }
+            if (sent) totalBytesSent.addAndGet(bytes.size.toLong())
+            sent
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send to $endpointId", e)
+            false
+        }
     }
 
     override suspend fun broadcastMessage(message: SyncMessage, excludeEndpoint: String?): Int {
@@ -142,7 +171,7 @@ class NearbyMeshTransport(
 
         var successCount = 0
         for (endpoint in targets) {
-            if (sendPayloadDirectly(endpoint, message)) {
+            if (sendMessage(endpoint, message)) {
                 successCount++
             }
         }
@@ -157,6 +186,27 @@ class NearbyMeshTransport(
 
     override fun getBytesSent(message: SyncMessage): Int {
         return SyncMessageCodec.calculatePayloadBytes(message)
+    }
+
+    override fun sendFilePayload(endpointId: String, file: File): Long? {
+        if (!connectedEndpoints.contains(endpointId)) {
+            Log.w(TAG, "Cannot send file payload to unauthenticated endpoint $endpointId")
+            return null
+        }
+        if (!file.exists() || !file.isFile || file.length() == 0L) {
+            Log.w(TAG, "Cannot send non-existent or empty file: ${file.absolutePath}")
+            return null
+        }
+        return try {
+            val payload = payloadFileFactory(file)
+            nearbyConnections.sendPayload(endpointId, payload)
+            totalBytesSent.addAndGet(file.length())
+            Log.d(TAG, "Dispatched file payload ${payload.id} (${file.length()} bytes) to $endpointId")
+            payload.id
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send file payload to $endpointId", e)
+            null
+        }
     }
 
     // --- Advertising ---
@@ -254,6 +304,25 @@ class NearbyMeshTransport(
             connectedEndpoints.remove(endpointId)
             val deviceId = endpointToDeviceId.remove(endpointId)
 
+            val it = incomingFilePayloads.entries.iterator()
+            while (it.hasNext()) {
+                val entry = it.next()
+                if (entry.value.first == endpointId) {
+                    val partialFile = entry.value.second
+                    _incomingFiles.value = IncomingFileTransfer(
+                        endpointId = endpointId,
+                        payloadId = entry.key,
+                        file = partialFile,
+                        isComplete = false,
+                        isFailed = true
+                    )
+                    try {
+                        if (partialFile.exists()) partialFile.delete()
+                    } catch (_: Exception) {}
+                    it.remove()
+                }
+            }
+
             if (deviceId != null) {
                 _connectedPeers.value = _connectedPeers.value - deviceId
                 onPeerDisconnected?.invoke(deviceId)
@@ -271,20 +340,73 @@ class NearbyMeshTransport(
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
-            if (payload.type != Payload.Type.BYTES) return
-
-            val bytes = payload.asBytes() ?: return
-
-            try {
-                val message = SyncMessageCodec.deserialize(bytes)
-                handleIncomingMessage(endpointId, message)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to deserialize message from $endpointId", e)
+            when (payload.type) {
+                Payload.Type.BYTES -> {
+                    val bytes = payload.asBytes() ?: return
+                    try {
+                        val message = SyncMessageCodec.deserialize(bytes)
+                        handleIncomingMessage(endpointId, message)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to deserialize message from $endpointId", e)
+                    }
+                }
+                Payload.Type.FILE -> {
+                    if (!connectedEndpoints.contains(endpointId)) {
+                        Log.w(TAG, "Rejected file payload ${payload.id} from unauthenticated endpoint $endpointId")
+                        return
+                    }
+                    val javaFile = payload.asFile()?.asJavaFile()
+                    if (javaFile != null) {
+                        incomingFilePayloads[payload.id] = endpointId to javaFile
+                        Log.d(TAG, "Registered incoming file payload ${payload.id} from $endpointId: ${javaFile.absolutePath}")
+                    } else {
+                        Log.w(TAG, "Received file payload ${payload.id} without valid java file reference from $endpointId")
+                    }
+                }
+                else -> {
+                    Log.d(TAG, "Ignoring unsupported payload type ${payload.type} from $endpointId")
+                }
             }
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            // Instant for BYTES payloads
+            val payloadId = update.payloadId
+            val tracked = incomingFilePayloads[payloadId] ?: return
+            val file = tracked.second
+
+            when (update.status) {
+                PayloadTransferUpdate.Status.SUCCESS -> {
+                    Log.i(TAG, "File payload $payloadId completed from $endpointId (${file.length()} bytes)")
+                    _incomingFiles.value = IncomingFileTransfer(
+                        endpointId = endpointId,
+                        payloadId = payloadId,
+                        file = file,
+                        isComplete = true,
+                        isFailed = false
+                    )
+                    incomingFilePayloads.remove(payloadId)
+                }
+                PayloadTransferUpdate.Status.FAILURE,
+                PayloadTransferUpdate.Status.CANCELED -> {
+                    Log.w(TAG, "File payload $payloadId failed/canceled with status ${update.status} from $endpointId")
+                    _incomingFiles.value = IncomingFileTransfer(
+                        endpointId = endpointId,
+                        payloadId = payloadId,
+                        file = file,
+                        isComplete = false,
+                        isFailed = true
+                    )
+                    try {
+                        if (file.exists()) file.delete()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to delete partial file ${file.absolutePath}", e)
+                    }
+                    incomingFilePayloads.remove(payloadId)
+                }
+                PayloadTransferUpdate.Status.IN_PROGRESS -> {
+                    // Ongoing transfer progress
+                }
+            }
         }
     }
 
