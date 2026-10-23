@@ -376,6 +376,7 @@ open class VirtualMeshEnvironment(
                 }
                 size
             }
+            else -> 128
         }
     }
 }

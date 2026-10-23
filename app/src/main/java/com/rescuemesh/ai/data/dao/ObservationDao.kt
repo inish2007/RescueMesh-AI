@@ -57,6 +57,9 @@ interface ObservationDao {
 
     @Query("SELECT * FROM observations WHERE mapEdgeId = :edgeId ORDER BY observedAtDevice DESC")
     suspend fun getByEdgeId(edgeId: String): List<ObservationEntity>
+
+    @Query("UPDATE observations SET evidencePath = :evidencePath, verificationStatus = :verificationStatus WHERE eventId = :eventId")
+    suspend fun updateEvidence(eventId: String, evidencePath: String?, verificationStatus: String)
 }
 
 data class SequenceDigest(

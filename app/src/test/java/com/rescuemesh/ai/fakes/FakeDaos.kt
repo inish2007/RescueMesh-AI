@@ -90,6 +90,15 @@ class FakeObservationDao : ObservationDao {
             .sortedByDescending { it.observedAtDevice }
     }
 
+    override suspend fun updateEvidence(eventId: String, evidencePath: String?, verificationStatus: String) {
+        observations[eventId]?.let { existing ->
+            observations[eventId] = existing.copy(
+                evidencePath = evidencePath,
+                verificationStatus = verificationStatus
+            )
+        }
+    }
+
     fun clear() {
         observations.clear()
     }
@@ -230,6 +239,46 @@ class FakeOutboxDao : OutboxDao {
         for (id in matchingIds) {
             updateStatus(id, status, attemptAt)
         }
+    }
+
+    override suspend fun updateStatusForPeer(eventId: String, peerId: String, status: String, attemptAt: Long) {
+        val matching = outboxEntries.values.filter { it.eventId == eventId && it.targetPeerId == peerId }
+        for (entry in matching) {
+            outboxEntries[entry.id] = entry.copy(
+                status = status,
+                lastAttemptAt = attemptAt
+            )
+        }
+    }
+
+    override suspend fun claimSending(id: Long, now: Long, ackDeadline: Long): Int {
+        var claimed = 0
+        outboxEntries.computeIfPresent(id) { _, entry ->
+            if (entry.status == "PENDING") {
+                claimed = 1
+                entry.copy(
+                    status = "SENDING",
+                    retryCount = entry.retryCount + 1,
+                    lastAttemptAt = now,
+                    nextAttemptAt = ackDeadline
+                )
+            } else {
+                entry
+            }
+        }
+        return claimed
+    }
+
+    override suspend fun requeueExpiredSending(now: Long): Int {
+        var count = 0
+        for ((id, entry) in outboxEntries) {
+            if (entry.status == "SENDING" && entry.nextAttemptAt <= now) {
+                val newStatus = if (entry.retryCount >= entry.maxRetries && entry.priority < 0.8f) "FAILED" else "PENDING"
+                outboxEntries[id] = entry.copy(status = newStatus)
+                count++
+            }
+        }
+        return count
     }
 
     override suspend fun updatePriority(id: Long, priority: Float, schedulerType: String) {

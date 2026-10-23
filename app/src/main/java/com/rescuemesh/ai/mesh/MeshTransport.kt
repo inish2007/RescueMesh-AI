@@ -3,6 +3,8 @@ package com.rescuemesh.ai.mesh
 import android.content.Context
 import com.rescuemesh.ai.model.PeerInfo
 import com.rescuemesh.ai.model.SyncMessage
+import java.io.File
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -126,6 +128,22 @@ interface MeshTransport {
      */
     fun getBytesSent(message: SyncMessage): Int
 
+    /**
+     * Transmits a local file as a raw file payload to a specific peer endpoint.
+     * Used for Stage 2 on-demand evidence transfer.
+     *
+     * @param endpointId Target peer endpoint identifier.
+     * @param file Local file to transmit.
+     * @return Generated 64-bit payload ID if transmission started, or null on failure.
+     */
+    fun sendFilePayload(endpointId: String, file: File): Long? = null
+
+    /**
+     * Observable flow of incoming file transfers and their completion status.
+     */
+    val incomingFiles: StateFlow<IncomingFileTransfer?>
+        get() = MutableStateFlow(null)
+
     companion object {
         /**
          * Factory operator allowing `MeshTransport(context)` instantiation
@@ -136,4 +154,18 @@ interface MeshTransport {
         operator fun invoke(context: Context, missionIdProvider: () -> String): MeshTransport =
             NearbyMeshTransport(context, missionIdProvider)
     }
+}
+
+/**
+ * Represents an incoming file payload transfer over the mesh transport.
+ */
+data class IncomingFileTransfer(
+    val endpointId: String,
+    val payloadId: Long,
+    val file: File,
+    val isComplete: Boolean,
+    val isFailed: Boolean
+) {
+    /** Alias for backward/forward compatibility */
+    val tempFile: File get() = file
 }

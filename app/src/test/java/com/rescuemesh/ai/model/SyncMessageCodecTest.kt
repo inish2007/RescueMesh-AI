@@ -1,8 +1,12 @@
 package com.rescuemesh.ai.model
 
+import com.rescuemesh.ai.data.entity.*
+import com.rescuemesh.ai.fakes.FakeObservationDao
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerializationException
 import org.junit.Assert.*
 import org.junit.Test
+import java.io.File
 
 class SyncMessageCodecTest {
 
@@ -152,13 +156,78 @@ class SyncMessageCodecTest {
     }
 
     @Test
+    fun testEvidenceRequestCodecRoundTrip() {
+        val req = SyncMessage.EvidenceRequest(
+            missionId = "mission-alpha",
+            eventId = "evt-photo-001",
+            evidenceHash = "a3f5b7c8d9e01234567890abcdef1234567890abcdef1234567890abcdef1234"
+        )
+        val bytes = SyncMessageCodec.serialize(req)
+        assertTrue(bytes.isNotEmpty())
+
+        val deserialized = SyncMessageCodec.deserialize(bytes)
+        assertTrue(deserialized is SyncMessage.EvidenceRequest)
+
+        val restored = deserialized as SyncMessage.EvidenceRequest
+        assertEquals("mission-alpha", restored.missionId)
+        assertEquals("evt-photo-001", restored.eventId)
+        assertEquals("a3f5b7c8d9e01234567890abcdef1234567890abcdef1234567890abcdef1234", restored.evidenceHash)
+        assertEquals("EVIDENCE_REQUEST", restored.type)
+    }
+
+    @Test
+    fun testEvidenceHeaderCodecRoundTrip() {
+        val header = SyncMessage.EvidenceHeader(
+            missionId = "mission-alpha",
+            eventId = "evt-photo-001",
+            evidenceHash = "a3f5b7c8d9e01234567890abcdef1234567890abcdef1234567890abcdef1234",
+            payloadId = 987654321012345L,
+            fileSizeBytes = 2048576L
+        )
+        val bytes = SyncMessageCodec.serialize(header)
+        val deserialized = SyncMessageCodec.deserialize(bytes) as SyncMessage.EvidenceHeader
+
+        assertEquals("mission-alpha", deserialized.missionId)
+        assertEquals("evt-photo-001", deserialized.eventId)
+        assertEquals("a3f5b7c8d9e01234567890abcdef1234567890abcdef1234567890abcdef1234", deserialized.evidenceHash)
+        assertEquals(987654321012345L, deserialized.payloadId)
+        assertEquals(2048576L, deserialized.fileSizeBytes)
+        assertEquals("EVIDENCE_HEADER", deserialized.type)
+    }
+
+    @Test
+    fun testEvidenceAckCodecRoundTrip() {
+        val ackVerified = SyncMessage.EvidenceAck(
+            missionId = "mission-alpha",
+            eventId = "evt-photo-001",
+            evidenceHash = "a3f5b7c8d9e01234567890abcdef1234567890abcdef1234567890abcdef1234",
+            verified = true
+        )
+        val bytes = SyncMessageCodec.serialize(ackVerified)
+        val deserialized = SyncMessageCodec.deserialize(bytes) as SyncMessage.EvidenceAck
+
+        assertEquals("mission-alpha", deserialized.missionId)
+        assertEquals("evt-photo-001", deserialized.eventId)
+        assertEquals("a3f5b7c8d9e01234567890abcdef1234567890abcdef1234567890abcdef1234", deserialized.evidenceHash)
+        assertTrue(deserialized.verified)
+        assertEquals("EVIDENCE_ACK", deserialized.type)
+
+        val ackFailed = ackVerified.copy(verified = false)
+        val failedRestored = SyncMessageCodec.deserialize(SyncMessageCodec.serialize(ackFailed)) as SyncMessage.EvidenceAck
+        assertFalse(failedRestored.verified)
+    }
+
+    @Test
     fun testCalculatePayloadBytesMatchesSerializedByteArrayLength() {
         val messages: List<SyncMessage> = listOf(
             SyncMessage.Hello(deviceId = "dev-1", deviceName = "Device 1", missionId = "mission-1"),
             SyncMessage.StateDigest(deviceId = "dev-1", sequences = mapOf("a" to 1L, "b" to 2L)),
             SyncMessage.EventRequest(requestorDeviceId = "dev-1", missingFromAuthors = mapOf("a" to 1L)),
             SyncMessage.EventBatch(senderDeviceId = "dev-1", events = emptyList<SyncObservation>()),
-            SyncMessage.EventAck(deviceId = "dev-1", acknowledgedEventIds = listOf("e1", "e2"))
+            SyncMessage.EventAck(deviceId = "dev-1", acknowledgedEventIds = listOf("e1", "e2")),
+            SyncMessage.EvidenceRequest(missionId = "m1", eventId = "e1", evidenceHash = "hash1"),
+            SyncMessage.EvidenceHeader(missionId = "m1", eventId = "e1", evidenceHash = "hash1", payloadId = 12345L, fileSizeBytes = 1000L),
+            SyncMessage.EvidenceAck(missionId = "m1", eventId = "e1", evidenceHash = "hash1", verified = true)
         )
 
         for (msg in messages) {
@@ -213,5 +282,70 @@ class SyncMessageCodecTest {
     fun testMalformedBytesThrowsSerializationException() {
         val malformed = "Definitely not valid json payload".toByteArray(Charsets.UTF_8)
         SyncMessageCodec.deserialize(malformed)
+    }
+
+    @Test
+    fun testObservationEntityEvidenceExtensions() {
+        val obsWithoutEvidence = ObservationEntity(
+            eventId = "evt-100",
+            missionId = "m1",
+            authorDeviceId = "dev-1",
+            authorSequence = 1L,
+            eventType = "NOTE",
+            title = "Simple observation",
+            observedAtDevice = 1000L
+        )
+
+        assertNull(obsWithoutEvidence.evidenceSha256)
+        assertNull(obsWithoutEvidence.evidenceFilePath)
+        assertEquals(0L, obsWithoutEvidence.evidenceSizeBytes)
+        assertEquals("image/jpeg", obsWithoutEvidence.evidenceMimeType)
+        assertFalse(obsWithoutEvidence.hasEvidence)
+
+        val tempFile = File.createTempFile("evidence_test_", ".jpg").apply {
+            writeBytes(ByteArray(1024))
+            deleteOnExit()
+        }
+
+        val obsWithEvidence = obsWithoutEvidence.copy(
+            evidencePath = tempFile.absolutePath,
+            evidenceHash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            verificationStatus = "VERIFIED"
+        )
+
+        assertEquals("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", obsWithEvidence.evidenceSha256)
+        assertEquals(tempFile.absolutePath, obsWithEvidence.evidenceFilePath)
+        assertEquals(1024L, obsWithEvidence.evidenceSizeBytes)
+        assertEquals("image/jpeg", obsWithEvidence.evidenceMimeType)
+        assertTrue(obsWithEvidence.hasEvidence)
+    }
+
+    @Test
+    fun testObservationDaoUpdateEvidence() = runBlocking {
+        val dao = FakeObservationDao()
+        val obs = ObservationEntity(
+            eventId = "evt-200",
+            missionId = "m1",
+            authorDeviceId = "dev-1",
+            authorSequence = 1L,
+            eventType = "PHOTO",
+            title = "Initial observation without photo",
+            observedAtDevice = 1000L,
+            evidencePath = null,
+            verificationStatus = "UNVERIFIED"
+        )
+        dao.insert(obs)
+
+        val fetchedInitial = dao.getById("evt-200")
+        assertNotNull(fetchedInitial)
+        assertNull(fetchedInitial!!.evidencePath)
+        assertEquals("UNVERIFIED", fetchedInitial.verificationStatus)
+
+        dao.updateEvidence("evt-200", "/data/app/evidence/evt-200.jpg", "VERIFIED")
+
+        val fetchedUpdated = dao.getById("evt-200")
+        assertNotNull(fetchedUpdated)
+        assertEquals("/data/app/evidence/evt-200.jpg", fetchedUpdated!!.evidencePath)
+        assertEquals("VERIFIED", fetchedUpdated.verificationStatus)
     }
 }

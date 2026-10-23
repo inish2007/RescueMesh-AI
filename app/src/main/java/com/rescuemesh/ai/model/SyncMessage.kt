@@ -66,6 +66,42 @@ sealed class SyncMessage {
         val deviceId: String,
         val acknowledgedEventIds: List<String>
     ) : SyncMessage()
+
+    /**
+     * Stage 2 on-demand request for specific photo evidence payload.
+     */
+    @Serializable
+    data class EvidenceRequest(
+        override val type: String = "EVIDENCE_REQUEST",
+        val missionId: String,
+        val eventId: String,
+        val evidenceHash: String
+    ) : SyncMessage()
+
+    /**
+     * Stage 2 header correlating Nearby Connections 64-bit payloadId to Observation evidence file.
+     */
+    @Serializable
+    data class EvidenceHeader(
+        override val type: String = "EVIDENCE_HEADER",
+        val missionId: String,
+        val eventId: String,
+        val evidenceHash: String,
+        val payloadId: Long,
+        val fileSizeBytes: Long
+    ) : SyncMessage()
+
+    /**
+     * Stage 2 acknowledgment of evidence payload receipt and verification status.
+     */
+    @Serializable
+    data class EvidenceAck(
+        override val type: String = "EVIDENCE_ACK",
+        val missionId: String,
+        val eventId: String,
+        val evidenceHash: String,
+        val verified: Boolean
+    ) : SyncMessage()
 }
 
 /**

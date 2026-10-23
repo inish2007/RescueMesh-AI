@@ -10,10 +10,13 @@ import com.rescuemesh.ai.data.repository.ObservationRepository
 import com.rescuemesh.ai.data.repository.SyncRepository
 import com.rescuemesh.ai.intelligence.MapFusionEngine
 import com.rescuemesh.ai.intelligence.PriorityScheduler
+import com.rescuemesh.ai.model.PeerInfo
 import com.rescuemesh.ai.model.SyncMessage
 import com.rescuemesh.ai.model.SyncObservation
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Coordinates synchronization between this device and connected peers.
@@ -43,6 +46,7 @@ class SyncCoordinator(
         const val SAFETY_PRIORITY_FLOOR = 0.80f
         const val BASE_BACKOFF_MS = 1000L
         const val MAX_BACKOFF_MS = 32000L
+        const val ACK_TIMEOUT_MS = 30_000L
 
         /**
          * Calculates bounded exponential backoff delay:
@@ -56,6 +60,7 @@ class SyncCoordinator(
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var syncJob: Job? = null
+    private val outboxMutex = Mutex()
 
     /**
      * Crash recovery: Reset any orphaned SENDING entries in the outbox back to PENDING.
@@ -152,24 +157,15 @@ class SyncCoordinator(
             // Check if already delivered
             if (outboxDao.isDeliveredTo(observation.eventId, peerDeviceId)) continue
 
-            val syncObs = observationToSync(observation)
-            val batch = SyncMessage.EventBatch(
-                senderDeviceId = deviceId,
-                events = listOf(syncObs)
-            )
-
-            val bytesSent = transport.getBytesSent(batch)
-            val sent = transport.sendMessage(peerInfo.endpointId, batch)
-
-            if (sent) {
-                val priority = scheduler.scoreObservation(observation)
-                syncRepo.recordSend(observation.eventId, peerDeviceId, bytesSent, "VOI", priority)
-                syncRepo.recordQueueDecision(
-                    observation.eventId, "VOI", priority,
-                    scheduler.scoreBreakdown(observation)
-                )
+            if (!outboxDao.hasPendingEntry(observation.eventId, peerDeviceId)) {
+                outboxDao.insert(OutboxEntity(
+                    eventId = observation.eventId,
+                    targetPeerId = peerDeviceId,
+                    priority = scheduler.scoreObservation(observation)
+                ))
             }
         }
+        processPendingOutbox()
     }
 
     // --- Message Handlers ---
@@ -195,7 +191,22 @@ class SyncCoordinator(
             }
 
             is SyncMessage.EventAck -> {
-                handleEventAck(message)
+                val peerDevice = transport.connectedPeers.value.values.find { it.endpointId == endpointId }?.deviceId
+                    ?: if (transport.getEndpointForDevice(message.deviceId) == endpointId) message.deviceId else null
+                if (peerDevice == message.deviceId) handleEventAck(message)
+                else Log.w(TAG, "Rejected ACK identity mismatch from $endpointId")
+            }
+
+            is SyncMessage.EvidenceRequest -> {
+                // Handled in Stage 2 by Agent A
+            }
+
+            is SyncMessage.EvidenceHeader -> {
+                // Handled in Stage 2 by Agent A
+            }
+
+            is SyncMessage.EvidenceAck -> {
+                // Handled in Stage 2 by Agent A
             }
         }
     }
@@ -291,27 +302,7 @@ class SyncCoordinator(
             }
         }
 
-        // Send in batches
-        val syncObservations = scored.map { (obs, _) -> observationToSync(obs) }
-        val batch = SyncMessage.EventBatch(
-            senderDeviceId = deviceId,
-            events = syncObservations
-        )
-
-        val bytesSent = transport.getBytesSent(batch)
-        val sent = transport.sendMessage(endpointId, batch)
-
-        if (sent) {
-            // Record metrics for each event
-            for ((obs, priority) in scored) {
-                syncRepo.recordSend(obs.eventId, digest.deviceId, bytesSent / scored.size, "VOI", priority)
-                syncRepo.recordQueueDecision(
-                    obs.eventId, "VOI", priority,
-                    scheduler.scoreBreakdown(obs)
-                )
-            }
-            syncRepo.recordBytesSent(digest.deviceId, bytesSent)
-        }
+        processPendingOutbox()
 
         // Record current pending queue depth metric
         val queueDepth = outboxDao.getPendingForPeer(digest.deviceId).size
@@ -350,25 +341,7 @@ class SyncCoordinator(
             }
         }
 
-        val syncObservations = scored.map { (obs, _) -> observationToSync(obs) }
-        val batch = SyncMessage.EventBatch(
-            senderDeviceId = deviceId,
-            events = syncObservations
-        )
-
-        val bytesSent = transport.getBytesSent(batch)
-        val sent = transport.sendMessage(endpointId, batch)
-
-        if (sent) {
-            for ((obs, priority) in scored) {
-                syncRepo.recordSend(obs.eventId, request.requestorDeviceId, bytesSent / scored.size, "VOI", priority)
-                syncRepo.recordQueueDecision(
-                    obs.eventId, "VOI", priority,
-                    scheduler.scoreBreakdown(obs)
-                )
-            }
-            syncRepo.recordBytesSent(request.requestorDeviceId, bytesSent)
-        }
+        processPendingOutbox()
 
         syncRepo.recordSync(
             peerId = request.requestorDeviceId,
@@ -441,6 +414,7 @@ class SyncCoordinator(
     suspend fun handleEventAck(ack: SyncMessage.EventAck) {
         val now = System.currentTimeMillis()
         for (eventId in ack.acknowledgedEventIds) {
+            if (!outboxDao.hasPendingEntry(eventId, ack.deviceId)) continue
             // Record delivery receipt
             outboxDao.insertReceipt(
                 DeliveryReceiptEntity(
@@ -451,7 +425,7 @@ class SyncCoordinator(
             )
 
             // Update outbox status to DELIVERED
-            outboxDao.updateStatusByEvent(eventId, "DELIVERED")
+            outboxDao.updateStatusForPeer(eventId, ack.deviceId, "DELIVERED", now)
 
             // Calculate delivery latency
             val observation = observationDao.getById(eventId)
@@ -476,49 +450,64 @@ class SyncCoordinator(
             // Check if already delivered
             if (outboxDao.isDeliveredTo(observation.eventId, peer.deviceId)) continue
 
-            val relayObs = observationToSync(observation).copy(
-                relayHopsRemaining = observation.relayHopsRemaining - 1
-            )
-
             // Commit to local Outbox BEFORE transmitting over mesh (Durable Local-First Persistence)
-            outboxDao.insert(
+            if (!outboxDao.hasPendingEntry(observation.eventId, peer.deviceId)) outboxDao.insert(
                 OutboxEntity(
                     eventId = observation.eventId,
                     targetPeerId = peer.deviceId,
                     priority = scheduler.scoreObservation(observation),
+                    maxHops = observation.relayHopsRemaining - 1,
                     status = "PENDING"
                 )
             )
 
-            val batch = SyncMessage.EventBatch(
-                senderDeviceId = deviceId,
-                events = listOf(relayObs)
-            )
-
-            transport.sendMessage(peer.endpointId, batch)
-            Log.d(TAG, "Relayed ${observation.eventId} to ${peer.deviceId}")
         }
+        processPendingOutbox()
     }
 
     /**
      * Drains pending outbox entries eligible for transmission under backoff rules.
      * Enforces the Absolute Safety Override (P >= 0.80).
      */
-    suspend fun processPendingOutbox(now: Long = System.currentTimeMillis()): Int {
+    suspend fun processPendingOutbox(now: Long = System.currentTimeMillis()): Int = outboxMutex.withLock {
+        outboxDao.requeueExpiredSending(now)
+
+        val peers = transport.connectedPeers.value
+        if (peers.isNotEmpty()) {
+            val broadcastEntries = outboxDao.getPendingByPriority().filter { it.targetPeerId == null }
+            for (b in broadcastEntries) {
+                outboxDao.expandBroadcast(b, peers.values.map { it.deviceId }, b.priority, now)
+            }
+        }
+
         val pending = outboxDao.getPendingByPriority()
         val transmittable = filterTransmittable(pending, now)
-        val peers = transport.connectedPeers.value
 
         var transmittedCount = 0
 
         for (entry in transmittable) {
             val targets = if (entry.targetPeerId != null) {
-                peers.filter { it.key == entry.targetPeerId }.values
+                val peer = peers[entry.targetPeerId]
+                if (peer != null) {
+                    listOf(peer)
+                } else {
+                    val endpoint = transport.getEndpointForDevice(entry.targetPeerId)
+                    if (endpoint != null) {
+                        listOf(PeerInfo(entry.targetPeerId, endpoint, entry.targetPeerId))
+                    } else {
+                        emptyList()
+                    }
+                }
             } else {
-                peers.values
+                peers.values.toList()
             }
 
             if (targets.isEmpty()) {
+                continue
+            }
+
+            if (entry.targetPeerId != null && outboxDao.isDeliveredTo(entry.eventId, entry.targetPeerId)) {
+                outboxDao.updateStatus(entry.id, "DELIVERED", now)
                 continue
             }
 
@@ -528,7 +517,9 @@ class SyncCoordinator(
                 continue
             }
 
-            outboxDao.updateStatus(entry.id, "SENDING", now)
+            if (outboxDao.claimSending(entry.id, now, now + ACK_TIMEOUT_MS) == 0) {
+                continue
+            }
 
             val syncObs = observationToSync(observation)
             val batch = SyncMessage.EventBatch(
@@ -558,7 +549,7 @@ class SyncCoordinator(
             }
         }
 
-        return transmittedCount
+        transmittedCount
     }
 
     // --- Periodic Sync ---

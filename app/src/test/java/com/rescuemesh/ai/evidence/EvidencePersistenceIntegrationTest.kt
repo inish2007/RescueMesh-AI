@@ -204,6 +204,15 @@ class EvidencePersistenceIntegrationTest {
                 .filter { it.mapEdgeId == edgeId }
                 .sortedByDescending { it.observedAtDevice }
         }
+
+        override suspend fun updateEvidence(eventId: String, evidencePath: String?, verificationStatus: String) {
+            savedObservations[eventId]?.let { existing ->
+                savedObservations[eventId] = existing.copy(
+                    evidencePath = evidencePath,
+                    verificationStatus = verificationStatus
+                )
+            }
+        }
     }
 
     private class TestOutboxDao : OutboxDao {
@@ -241,6 +250,39 @@ class EvidencePersistenceIntegrationTest {
         override suspend fun updateStatusByEvent(eventId: String, status: String, attemptAt: Long) {
             val idx = savedEntries.indexOfFirst { it.eventId == eventId }
             if (idx >= 0) savedEntries[idx] = savedEntries[idx].copy(status = status, lastAttemptAt = attemptAt)
+        }
+
+        override suspend fun updateStatusForPeer(eventId: String, peerId: String, status: String, attemptAt: Long) {
+            val idx = savedEntries.indexOfFirst { it.eventId == eventId && it.targetPeerId == peerId }
+            if (idx >= 0) savedEntries[idx] = savedEntries[idx].copy(status = status, lastAttemptAt = attemptAt)
+        }
+
+        override suspend fun claimSending(id: Long, now: Long, ackDeadline: Long): Int {
+            val idx = savedEntries.indexOfFirst { it.id == id && it.status == "PENDING" }
+            if (idx >= 0) {
+                val entry = savedEntries[idx]
+                savedEntries[idx] = entry.copy(
+                    status = "SENDING",
+                    retryCount = entry.retryCount + 1,
+                    lastAttemptAt = now,
+                    nextAttemptAt = ackDeadline
+                )
+                return 1
+            }
+            return 0
+        }
+
+        override suspend fun requeueExpiredSending(now: Long): Int {
+            var count = 0
+            for (i in savedEntries.indices) {
+                val entry = savedEntries[i]
+                if (entry.status == "SENDING" && entry.nextAttemptAt <= now) {
+                    val newStatus = if (entry.retryCount >= entry.maxRetries && entry.priority < 0.8f) "FAILED" else "PENDING"
+                    savedEntries[i] = entry.copy(status = newStatus)
+                    count++
+                }
+            }
+            return count
         }
 
         override suspend fun updatePriority(id: Long, priority: Float, schedulerType: String) {

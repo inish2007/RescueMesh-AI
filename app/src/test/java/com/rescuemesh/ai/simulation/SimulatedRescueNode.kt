@@ -267,6 +267,9 @@ open class SimulatedRescueNode(
                     )
                 }
             }
+            else -> {
+                // EvidenceRequest, EvidenceHeader, EvidenceAck ignored in virtual node
+            }
         }
 
         return responses
