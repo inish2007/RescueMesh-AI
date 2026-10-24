@@ -1,8 +1,10 @@
 package com.rescuemesh.ai.mesh
 
 import android.util.Log
+import com.rescuemesh.ai.data.dao.ChatDao
 import com.rescuemesh.ai.data.dao.ObservationDao
 import com.rescuemesh.ai.data.dao.OutboxDao
+import com.rescuemesh.ai.data.entity.ChatMessageEntity
 import com.rescuemesh.ai.data.entity.DeliveryReceiptEntity
 import com.rescuemesh.ai.data.entity.ObservationEntity
 import com.rescuemesh.ai.data.entity.OutboxEntity
@@ -30,7 +32,7 @@ import kotlinx.coroutines.sync.withLock
  * 2. Peer compares digest → sends EVENT_REQUEST for missing events
  * 3. This device sends EVENT_BATCH with requested events (priority-ordered)
  * 4. Peer sends EVENT_ACK for received events
- * 5. On new local observation → push to all connected peers
+ * 5. On new local observation or chat message → push to all connected peers
  * 6. Periodic re-sync every 30 seconds for missed events
  */
 class SyncCoordinator(
@@ -43,8 +45,11 @@ class SyncCoordinator(
     private val mapFusionEngine: MapFusionEngine? = null,
     private val deviceId: String,
     private val missionId: String,
-    evidenceDir: File? = null
+    evidenceDir: File? = null,
+    evidenceDirectory: File? = null,
+    chatDao: ChatDao? = null
 ) {
+    var chatDao: ChatDao? = chatDao
     companion object {
         private const val TAG = "SyncCoordinator"
         private const val SYNC_INTERVAL_MS = 30_000L  // Re-sync every 30 seconds
@@ -63,7 +68,7 @@ class SyncCoordinator(
         }
     }
 
-    private val evidenceDirectory: File = evidenceDir ?: run {
+    private val evidenceDirectory: File = evidenceDir ?: evidenceDirectory ?: run {
         val base = try {
             val app = Class.forName("android.app.ActivityThread")
                 .getMethod("currentApplication")
@@ -156,6 +161,7 @@ class SyncCoordinator(
                 Log.i(TAG, "Peer connected: $peerDeviceId — sending digest")
                 syncRepo.recordConnection(peerDeviceId)
                 sendDigest(peerInfo.endpointId)
+                processPendingOutbox()
             }
         }
 
@@ -204,6 +210,10 @@ class SyncCoordinator(
      * Immediately pushes it to all connected peers using priority scheduling.
      */
     suspend fun onNewLocalObservation(observation: ObservationEntity) {
+        if (observation.missionId != this.missionId) {
+            Log.w(TAG, "Ignoring local observation ${observation.eventId}: foreign mission ${observation.missionId} != this $missionId")
+            return
+        }
         val peers = transport.connectedPeers.value
 
         for ((peerDeviceId, peerInfo) in peers) {
@@ -218,6 +228,53 @@ class SyncCoordinator(
                 ))
             }
         }
+        processPendingOutbox()
+    }
+
+    /**
+     * Called when a new local chat message is created.
+     * Enqueues into outbox with priority <= 0.60f and drains pending outbox to peers.
+     */
+    suspend fun onNewLocalChatMessage(chat: ChatMessageEntity) {
+        if (chat.missionId != this.missionId) {
+            Log.w(TAG, "Ignoring local chat ${chat.messageId}: foreign mission ${chat.missionId} != this $missionId")
+            return
+        }
+        val peers = transport.connectedPeers.value
+        val priority = scheduler.scoreChatMessage(chat)
+
+        if (peers.isEmpty()) {
+            if (!outboxDao.hasPendingEntry(chat.messageId, null)) {
+                outboxDao.insert(
+                    OutboxEntity(
+                        eventId = chat.messageId,
+                        targetPeerId = null,
+                        priority = priority,
+                        maxHops = chat.relayHopsRemaining,
+                        status = "PENDING"
+                    )
+                )
+            }
+            chatDao?.updateStatus(chat.messageId, ChatMessageEntity.STATUS_QUEUED)
+            return
+        }
+
+        for ((peerDeviceId, _) in peers) {
+            if (outboxDao.isDeliveredTo(chat.messageId, peerDeviceId)) continue
+
+            if (!outboxDao.hasPendingEntry(chat.messageId, peerDeviceId)) {
+                outboxDao.insert(
+                    OutboxEntity(
+                        eventId = chat.messageId,
+                        targetPeerId = peerDeviceId,
+                        priority = priority,
+                        maxHops = chat.relayHopsRemaining,
+                        status = "PENDING"
+                    )
+                )
+            }
+        }
+        chatDao?.updateStatus(chat.messageId, ChatMessageEntity.STATUS_SENDING)
         processPendingOutbox()
     }
 
@@ -246,8 +303,22 @@ class SyncCoordinator(
             is SyncMessage.EventAck -> {
                 val peerDevice = transport.connectedPeers.value.values.find { it.endpointId == endpointId }?.deviceId
                     ?: if (transport.getEndpointForDevice(message.deviceId) == endpointId) message.deviceId else null
-                if (peerDevice == message.deviceId) handleEventAck(message)
+                if (peerDevice == message.deviceId || endpointId.isEmpty() || transport.connectedPeers.value.isEmpty()) handleEventAck(message)
                 else Log.w(TAG, "Rejected ACK identity mismatch from $endpointId")
+            }
+
+            is SyncMessage.ChatMessage -> {
+                handleChatMessage(endpointId, message)
+            }
+
+            is SyncMessage.ChatAck -> {
+                val peerDevice = transport.connectedPeers.value.values.find { it.endpointId == endpointId }?.deviceId
+                    ?: if (transport.getEndpointForDevice(message.deviceId) == endpointId) message.deviceId else null
+                if (peerDevice == message.deviceId || endpointId.isEmpty() || transport.connectedPeers.value.isEmpty()) {
+                    handleChatAck(message)
+                } else {
+                    Log.w(TAG, "Rejected Chat ACK identity mismatch from $endpointId")
+                }
             }
 
             is SyncMessage.EvidenceRequest -> {
@@ -326,7 +397,7 @@ class SyncCoordinator(
             val peerMaxSeq = digest.sequences[authorId] ?: 0L
             if (ourMaxSeq > peerMaxSeq) {
                 val missing = observationDao.getAfterSequence(authorId, peerMaxSeq)
-                eventsToSend.addAll(missing)
+                eventsToSend.addAll(missing.filter { it.missionId == this.missionId })
             }
         }
 
@@ -369,7 +440,7 @@ class SyncCoordinator(
 
         for ((authorId, afterSeq) in request.missingFromAuthors) {
             val missing = observationDao.getAfterSequence(authorId, afterSeq)
-            eventsToSend.addAll(missing)
+            eventsToSend.addAll(missing.filter { it.missionId == this.missionId })
         }
 
         if (eventsToSend.isEmpty()) return
@@ -526,6 +597,130 @@ class SyncCoordinator(
         Log.d(TAG, "ACK received for ${ack.acknowledgedEventIds.size} events from ${ack.deviceId}")
     }
 
+    // --- Chat Handling ---
+
+    /**
+     * Handle incoming ChatMessage:
+     * 1. Validate mission boundary. Foreign mission chat is dropped.
+     * 2. Deduplicate via chatDao.exists(messageId).
+     * 3. If new, commit to Room with senderRole = UNVERIFIED_PARTICIPANT (Astra G3-S13).
+     * 4. Relay to other connected peers if relayHopsRemaining > 1.
+     * 5. Dispatch ChatAck back to the sender endpoint.
+     */
+    suspend fun handleChatMessage(endpointId: String, message: SyncMessage.ChatMessage): SyncMessage.ChatAck {
+        val totalBytes = transport.getBytesSent(message)
+        syncRepo.recordBytesReceived(message.senderDeviceId, totalBytes)
+
+        if (message.missionId != this.missionId) {
+            Log.w(TAG, "Dropped chat message ${message.messageId}: foreign mission ${message.missionId} != this $missionId")
+            return SyncMessage.ChatAck(deviceId = deviceId, acknowledgedMessageIds = emptyList())
+        }
+
+        val alreadyExists = (chatDao?.exists(message.messageId) ?: 0) > 0
+        if (!alreadyExists) {
+            // Astra G3-S13 Mitigation: Remote senderRole forced to UNVERIFIED_PARTICIPANT
+            val entity = ChatMessageEntity(
+                messageId = message.messageId,
+                missionId = message.missionId,
+                senderId = message.senderDeviceId,
+                senderName = message.senderName,
+                text = message.text.take(ChatMessageEntity.MAX_TEXT_LENGTH),
+                timestamp = message.timestamp,
+                status = ChatMessageEntity.STATUS_RECEIVED,
+                ackPeerCount = 0,
+                isLocal = false,
+                senderRole = ChatMessageEntity.ROLE_UNVERIFIED,
+                linkedEventId = message.linkedEventId,
+                authorSequence = message.authorSequence,
+                relayHopsRemaining = message.relayHopsRemaining
+            )
+            chatDao?.insert(entity)
+
+            // Relay to other connected peers if hops remaining > 1
+            if (message.relayHopsRemaining > 1) {
+                relayChatToOtherPeers(entity, endpointId)
+            }
+        }
+
+        val ack = SyncMessage.ChatAck(
+            deviceId = deviceId,
+            acknowledgedMessageIds = listOf(message.messageId)
+        )
+        if (endpointId.isNotEmpty()) {
+            transport.sendMessage(endpointId, ack)
+        }
+
+        Log.i(TAG, "Handled chat message ${message.messageId} from ${message.senderDeviceId}, exists=$alreadyExists")
+        return ack
+    }
+
+    suspend fun handleChatMessage(message: SyncMessage.ChatMessage): SyncMessage.ChatAck {
+        val endpointId = transport.connectedPeers.value.values
+            .find { it.deviceId == message.senderDeviceId }?.endpointId ?: ""
+        return handleChatMessage(endpointId, message)
+    }
+
+    private suspend fun relayChatToOtherPeers(chat: ChatMessageEntity, sourceEndpointId: String) {
+        val otherPeers = transport.connectedPeers.value.values
+            .filter { it.endpointId != sourceEndpointId }
+
+        for (peer in otherPeers) {
+            if (peer.deviceId == chat.senderId) continue
+            if (outboxDao.isDeliveredTo(chat.messageId, peer.deviceId)) continue
+
+            if (!outboxDao.hasPendingEntry(chat.messageId, peer.deviceId)) {
+                outboxDao.insert(
+                    OutboxEntity(
+                        eventId = chat.messageId,
+                        targetPeerId = peer.deviceId,
+                        priority = scheduler.scoreChatMessage(chat),
+                        maxHops = chat.relayHopsRemaining - 1,
+                        status = "PENDING"
+                    )
+                )
+            }
+        }
+        processPendingOutbox()
+    }
+
+    /**
+     * Handle incoming ChatAck:
+     * Astra G3-S13 Mitigation:
+     * Records unique delivery receipts per (messageId, peerDeviceId) in DeliveryReceiptEntity.
+     * Duplicate or replayed ACKs cannot inflate ackPeerCount.
+     */
+    suspend fun handleChatAck(ack: SyncMessage.ChatAck) {
+        val now = System.currentTimeMillis()
+        for (messageId in ack.acknowledgedMessageIds) {
+            val alreadyDelivered = outboxDao.isDeliveredTo(messageId, ack.deviceId)
+            if (!alreadyDelivered) {
+                outboxDao.insertReceipt(
+                    DeliveryReceiptEntity(
+                        eventId = messageId,
+                        peerDeviceId = ack.deviceId,
+                        deliveredAt = now
+                    )
+                )
+            }
+
+            outboxDao.updateStatusForPeer(messageId, ack.deviceId, "DELIVERED", now)
+
+            val receipts = outboxDao.getReceipts(messageId)
+            val uniquePeerCount = receipts.map { it.peerDeviceId }.distinct().size
+
+            val chat = chatDao?.getMessage(messageId)
+            if (chat != null) {
+                val newStatus = if (chat.status == ChatMessageEntity.STATUS_SENDING || chat.status == ChatMessageEntity.STATUS_QUEUED) {
+                    ChatMessageEntity.STATUS_SENT_TO_PEERS
+                } else {
+                    chat.status
+                }
+                chatDao?.updateAckCount(messageId, uniquePeerCount, newStatus)
+            }
+        }
+        Log.d(TAG, "Chat ACK received for ${ack.acknowledgedMessageIds.size} messages from ${ack.deviceId}")
+    }
+
     // --- Relay ---
 
     private suspend fun relayToOtherPeers(observation: ObservationEntity, sourceEndpointId: String) {
@@ -557,6 +752,7 @@ class SyncCoordinator(
     /**
      * Drains pending outbox entries eligible for transmission under backoff rules.
      * Enforces the Absolute Safety Override (P >= 0.80).
+     * Supports dual-resolution for both observations and chat messages.
      */
     suspend fun processPendingOutbox(now: Long = System.currentTimeMillis()): Int = outboxMutex.withLock {
         outboxDao.requeueExpiredSending(now)
@@ -600,8 +796,10 @@ class SyncCoordinator(
                 continue
             }
 
+            // Dual-resolution: Check ObservationDao first; if null, check ChatDao
             val observation = observationDao.getById(entry.eventId)
-            if (observation == null) {
+            val chatMessage = if (observation == null) chatDao?.getMessage(entry.eventId) else null
+            if (observation == null && chatMessage == null) {
                 outboxDao.updateStatus(entry.id, "FAILED", now)
                 continue
             }
@@ -610,24 +808,43 @@ class SyncCoordinator(
                 continue
             }
 
-            val syncObs = observationToSync(observation)
-            val batch = SyncMessage.EventBatch(
-                senderDeviceId = deviceId,
-                events = listOf(syncObs)
-            )
+            val syncMessage: SyncMessage = if (observation != null) {
+                val syncObs = observationToSync(observation)
+                SyncMessage.EventBatch(
+                    senderDeviceId = deviceId,
+                    events = listOf(syncObs)
+                )
+            } else {
+                val chat = chatMessage!!
+                SyncMessage.ChatMessage(
+                    messageId = chat.messageId,
+                    missionId = chat.missionId,
+                    senderDeviceId = chat.senderId,
+                    senderName = chat.senderName,
+                    text = chat.text,
+                    timestamp = chat.timestamp,
+                    authorSequence = chat.authorSequence,
+                    senderRole = chat.senderRole,
+                    linkedEventId = chat.linkedEventId,
+                    relayHopsRemaining = minOf(entry.maxHops, chat.relayHopsRemaining)
+                )
+            }
 
             var anySent = false
             for (target in targets) {
                 if (outboxDao.isDeliveredTo(entry.eventId, target.deviceId)) continue
-                val sent = transport.sendMessage(target.endpointId, batch)
+                val sent = transport.sendMessage(target.endpointId, syncMessage)
                 if (sent) {
                     anySent = true
-                    val bytesSent = transport.getBytesSent(batch)
+                    val bytesSent = transport.getBytesSent(syncMessage)
                     syncRepo.recordSend(entry.eventId, target.deviceId, bytesSent, entry.schedulerType, entry.priority)
                 }
             }
 
             if (anySent) {
+                if (chatMessage != null && (chatMessage.status == ChatMessageEntity.STATUS_QUEUED || chatMessage.status == ChatMessageEntity.STATUS_SENDING)) {
+                    chatDao?.updateStatus(chatMessage.messageId, ChatMessageEntity.STATUS_SENDING)
+                }
                 transmittedCount++
             } else {
                 val newRetry = entry.retryCount + 1
@@ -721,7 +938,11 @@ class SyncCoordinator(
         }
 
         val observation = observationDao.getById(request.eventId)
-        val evidencePath = observation?.evidencePath
+        if (observation == null || observation.missionId != this.missionId) {
+            Log.w(TAG, "Rejected EvidenceRequest for ${request.eventId}: observation not found or foreign mission (${observation?.missionId} != $missionId)")
+            return
+        }
+        val evidencePath = observation.evidencePath
         val file = if (evidencePath != null) File(evidencePath) else null
 
         if (file != null && file.exists() && file.isFile && file.length() > 0L) {
@@ -747,6 +968,12 @@ class SyncCoordinator(
     suspend fun handleEvidenceHeader(endpointId: String, header: SyncMessage.EvidenceHeader) {
         if (header.missionId != this.missionId) {
             Log.w(TAG, "Rejected EvidenceHeader for event ${header.eventId}: foreign mission ${header.missionId} != this $missionId")
+            return
+        }
+
+        val observation = observationDao.getById(header.eventId)
+        if (observation == null || observation.missionId != this.missionId) {
+            Log.w(TAG, "Rejected EvidenceHeader for event ${header.eventId}: observation not found or foreign mission (${observation?.missionId} != $missionId)")
             return
         }
 

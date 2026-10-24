@@ -1,14 +1,17 @@
 package com.rescuemesh.ai.intelligence
 
+import com.rescuemesh.ai.data.dao.ChatDao
 import com.rescuemesh.ai.data.dao.MapDao
 import com.rescuemesh.ai.data.dao.ObservationDao
 import com.rescuemesh.ai.data.dao.OutboxDao
+import com.rescuemesh.ai.data.entity.ChatMessageEntity
 import com.rescuemesh.ai.data.entity.ObservationEntity
 
 /**
  * Value-of-Information (VoI) priority scheduler.
  *
- * Scores pending observations for transmission priority using a weighted feature vector:
+ * Scores pending observations and emergency chat messages for transmission priority
+ * using a weighted feature vector:
  *   P = w_u*U + w_n*N + w_g*G + w_r*R - w_c*C - w_s*S
  *
  * Where:
@@ -20,7 +23,11 @@ import com.rescuemesh.ai.data.entity.ObservationEntity
  *   S = Staleness (how old is the observation?)
  *
  * SAFETY OVERRIDE: Hazard and blocked-route reports have a minimum priority floor
- * that cannot be suppressed by the scoring model.
+ * (P >= 0.80f) that cannot be suppressed by the scoring model.
+ *
+ * CHAT CEILING: Emergency chat messages are strictly capped at P <= 0.60f
+ * (general chat ~0.30f, SOS incident thread ~0.50f - 0.60f).
+ * Emergency SOS and Hazards (P >= 0.80f) strictly preempt chat queues.
  *
  * These weights are development parameters, NOT research findings.
  * They must be calibrated on real captured events.
@@ -28,7 +35,8 @@ import com.rescuemesh.ai.data.entity.ObservationEntity
 class PriorityScheduler(
     private val observationDao: ObservationDao,
     private val mapDao: MapDao,
-    private val outboxDao: OutboxDao
+    private val outboxDao: OutboxDao,
+    private val chatDao: ChatDao? = null
 ) {
     companion object {
         // Default weights — tunable
@@ -40,7 +48,13 @@ class PriorityScheduler(
         private const val W_STALENESS = 0.05f
 
         // Safety floor: hazards/blocks can never score below this
-        private const val SAFETY_PRIORITY_FLOOR = 0.80f
+        const val SAFETY_PRIORITY_FLOOR = 0.80f
+
+        // Hard safety ceiling: emergency chat can NEVER exceed 0.60f
+        // Guarantees Emergency SOS (P >= 0.80f) strictly preempts chat traffic
+        const val CHAT_PRIORITY_CEILING = 0.60f
+        const val CHAT_INCIDENT_THREAD_BASE_URGENCY = 0.55f
+        const val CHAT_GENERAL_BASE_URGENCY = 0.20f
 
         // Max age before an observation starts losing freshness (5 minutes)
         private const val MAX_FRESHNESS_AGE_MS = 5 * 60 * 1000L
@@ -53,6 +67,55 @@ class PriorityScheduler(
     fun scoreObservation(observation: ObservationEntity): Float {
         val breakdown = scoreBreakdown(observation)
         return breakdown["finalScore"] ?: 0f
+    }
+
+    /**
+     * Score a chat message for transmission priority.
+     * Guaranteed to NEVER exceed CHAT_PRIORITY_CEILING (0.60f), ensuring
+     * Emergency SOS and Hazard reports (P >= 0.80f) strictly preempt chat traffic.
+     */
+    fun scoreChatMessage(chat: ChatMessageEntity): Float {
+        val breakdown = scoreChatMessageBreakdown(chat)
+        return breakdown["finalScore"] ?: 0.30f
+    }
+
+    /**
+     * Detailed score breakdown for an emergency chat message.
+     */
+    fun scoreChatMessageBreakdown(chat: ChatMessageEntity): Map<String, Float> {
+        val isIncidentThread = !chat.linkedEventId.isNullOrBlank()
+        val urgency = if (isIncidentThread) CHAT_INCIDENT_THREAD_BASE_URGENCY else CHAT_GENERAL_BASE_URGENCY
+        val novelty = if (chat.isLocal) 0.60f else 0.40f
+        val infoGain = if (isIncidentThread) 0.50f else 0.20f
+        val relevance = if (isIncidentThread) 0.80f else 0.40f
+
+        val textLen = chat.text.length.coerceIn(0, 500)
+        val cost = (textLen.toFloat() / 500f) * 0.20f
+
+        val ageMs = System.currentTimeMillis() - chat.timestamp
+        val staleness = (ageMs.toFloat() / MAX_FRESHNESS_AGE_MS).coerceIn(0f, 1f)
+
+        var score = (W_URGENCY * urgency) +
+                    (W_NOVELTY * novelty) +
+                    (W_INFO_GAIN * infoGain) +
+                    (W_RELEVANCE * relevance) -
+                    (W_COST * cost) -
+                    (W_STALENESS * staleness)
+
+        // Strict hard ceiling: chat can never exceed 0.60f and never reaches safety floor (0.80f)
+        val finalScore = score.coerceIn(0.10f, CHAT_PRIORITY_CEILING)
+
+        return mapOf(
+            "urgency" to urgency,
+            "novelty" to novelty,
+            "informationGain" to infoGain,
+            "relevance" to relevance,
+            "cost" to cost,
+            "staleness" to staleness,
+            "rawScore" to score,
+            "safetyCritical" to 0f,
+            "finalScore" to finalScore
+        )
     }
 
     /**
@@ -101,10 +164,19 @@ class PriorityScheduler(
         val scoredList = mutableListOf<Triple<String, Float, Int>>()
 
         for (entry in pending) {
-            val obs = observationDao.getById(entry.eventId) ?: continue
-            val priority = scoreObservation(obs)
-            val estimatedBytes = (obs.title.length + obs.description.length + 200) * 2
-            scoredList.add(Triple(entry.eventId, priority, estimatedBytes))
+            val obs = observationDao.getById(entry.eventId)
+            if (obs != null) {
+                val priority = scoreObservation(obs)
+                val estimatedBytes = (obs.title.length + obs.description.length + 200) * 2
+                scoredList.add(Triple(entry.eventId, priority, estimatedBytes))
+            } else {
+                val chat = chatDao?.getMessage(entry.eventId)
+                if (chat != null) {
+                    val priority = scoreChatMessage(chat)
+                    val estimatedBytes = (chat.text.length + 220) * 2
+                    scoredList.add(Triple(entry.eventId, priority, estimatedBytes))
+                }
+            }
         }
 
         // Must sort by priority descending BEFORE budget cutoff

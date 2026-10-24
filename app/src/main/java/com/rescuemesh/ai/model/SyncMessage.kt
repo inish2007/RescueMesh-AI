@@ -102,6 +102,34 @@ sealed class SyncMessage {
         val evidenceHash: String,
         val verified: Boolean
     ) : SyncMessage()
+
+    /**
+     * Emergency broadcast chat message or SOS-linked incident thread message.
+     */
+    @Serializable
+    data class ChatMessage(
+        override val type: String = "CHAT_MESSAGE",
+        val messageId: String,
+        val missionId: String,
+        val senderDeviceId: String,
+        val senderName: String,
+        val text: String,
+        val timestamp: Long,
+        val authorSequence: Long = 0L,
+        val senderRole: String = "UNVERIFIED_PARTICIPANT",
+        val linkedEventId: String? = null,
+        val relayHopsRemaining: Int = 3
+    ) : SyncMessage()
+
+    /**
+     * Acknowledgement of received chat messages.
+     */
+    @Serializable
+    data class ChatAck(
+        override val type: String = "CHAT_ACK",
+        val deviceId: String,
+        val acknowledgedMessageIds: List<String>
+    ) : SyncMessage()
 }
 
 /**

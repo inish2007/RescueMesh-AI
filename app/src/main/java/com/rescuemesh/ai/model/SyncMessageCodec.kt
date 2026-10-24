@@ -30,6 +30,8 @@ object SyncMessageCodec {
             is SyncMessage.EvidenceRequest -> json.encodeToString(message)
             is SyncMessage.EvidenceHeader -> json.encodeToString(message)
             is SyncMessage.EvidenceAck -> json.encodeToString(message)
+            is SyncMessage.ChatMessage -> json.encodeToString(message)
+            is SyncMessage.ChatAck -> json.encodeToString(message)
         }
         return json.encodeToString(SyncMessageEnvelope(type = message.type, payload = payload))
     }
@@ -55,6 +57,8 @@ object SyncMessageCodec {
             "EVIDENCE_REQUEST" -> json.decodeFromString<SyncMessage.EvidenceRequest>(envelope.payload)
             "EVIDENCE_HEADER" -> json.decodeFromString<SyncMessage.EvidenceHeader>(envelope.payload)
             "EVIDENCE_ACK" -> json.decodeFromString<SyncMessage.EvidenceAck>(envelope.payload)
+            "CHAT_MESSAGE" -> json.decodeFromString<SyncMessage.ChatMessage>(envelope.payload)
+            "CHAT_ACK" -> json.decodeFromString<SyncMessage.ChatAck>(envelope.payload)
             else -> throw IllegalArgumentException("Unknown message type: ${envelope.type}")
         }
     }

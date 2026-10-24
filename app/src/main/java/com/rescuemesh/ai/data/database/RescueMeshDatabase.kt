@@ -16,9 +16,10 @@ import com.rescuemesh.ai.data.entity.*
         PeerEntity::class,
         OutboxEntity::class,
         DeliveryReceiptEntity::class,
-        MetricsEventEntity::class
+        MetricsEventEntity::class,
+        ChatMessageEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class RescueMeshDatabase : RoomDatabase() {
@@ -29,6 +30,7 @@ abstract class RescueMeshDatabase : RoomDatabase() {
     abstract fun outboxDao(): OutboxDao
     abstract fun metricsDao(): MetricsDao
     abstract fun missionDao(): MissionDao
+    abstract fun chatDao(): ChatDao
 
     companion object {
         @Volatile
@@ -68,6 +70,36 @@ abstract class RescueMeshDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS chat_messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        messageId TEXT NOT NULL,
+                        missionId TEXT NOT NULL,
+                        senderId TEXT NOT NULL,
+                        senderName TEXT NOT NULL,
+                        text TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        ackPeerCount INTEGER NOT NULL,
+                        isLocal INTEGER NOT NULL,
+                        senderRole TEXT NOT NULL,
+                        linkedEventId TEXT,
+                        authorSequence INTEGER NOT NULL,
+                        relayHopsRemaining INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_chat_messages_messageId ON chat_messages(messageId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_chat_messages_missionId ON chat_messages(missionId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_chat_messages_timestamp ON chat_messages(timestamp)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_chat_messages_status ON chat_messages(status)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_chat_messages_linkedEventId ON chat_messages(linkedEventId)")
+            }
+        }
+
         fun getInstance(context: Context): RescueMeshDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -75,7 +107,7 @@ abstract class RescueMeshDatabase : RoomDatabase() {
                     RescueMeshDatabase::class.java,
                     "rescuemesh_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }
