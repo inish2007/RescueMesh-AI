@@ -180,4 +180,102 @@ class OfflineMapManagerTest {
         assertTrue(content.contains("#161B22")) // Dark tactical surface
         assertTrue(content.contains("openmaptiles"))
     }
+
+    @Test
+    fun testCreateGpsAreaRegion_accurateCosineScaling_acrossLatitudes() {
+        val radiusMeters = 1000f
+
+        // 1. Bangalore (Mid-latitude: 12.9716°N, 77.5946°E)
+        val bangaloreRegion = mapManager.createGpsAreaRegion(
+            latitude = 12.9716,
+            longitude = 77.5946,
+            radiusMeters = radiusMeters
+        )
+
+        val bLatSpanDeg = bangaloreRegion.maxLat - bangaloreRegion.minLat
+        val bLonSpanDeg = bangaloreRegion.maxLon - bangaloreRegion.minLon
+        val bPhysicalLatMeters = bLatSpanDeg * OfflineRegionModel.METERS_PER_LAT_DEGREE
+        val bPhysicalLonMeters = bLonSpanDeg * OfflineRegionModel.METERS_PER_LON_DEGREE_EQUATOR * kotlin.math.cos(Math.toRadians(12.9716))
+
+        assertEquals("Physical North-South span must equal 2 * R (2000m)", 2000.0, bPhysicalLatMeters, 0.5)
+        assertEquals("Physical East-West span must equal 2 * R (2000m)", 2000.0, bPhysicalLonMeters, 0.5)
+        assertEquals("Bangalore physical aspect ratio must be 1.0 (equilateral square)", 1.0, bPhysicalLonMeters / bPhysicalLatMeters, 0.001)
+
+        // 2. High-Latitude (Sub-Arctic: 60.0°N, 10.0°E)
+        // At 60°N, cos(60°) = 0.5, so longitude degrees must be 2.0x wider to maintain 2000m on ground
+        val arcticRegion = mapManager.createGpsAreaRegion(
+            latitude = 60.0,
+            longitude = 10.0,
+            radiusMeters = radiusMeters
+        )
+
+        val aLatSpanDeg = arcticRegion.maxLat - arcticRegion.minLat
+        val aLonSpanDeg = arcticRegion.maxLon - arcticRegion.minLon
+        val aPhysicalLatMeters = aLatSpanDeg * OfflineRegionModel.METERS_PER_LAT_DEGREE
+        val aPhysicalLonMeters = aLonSpanDeg * OfflineRegionModel.METERS_PER_LON_DEGREE_EQUATOR * kotlin.math.cos(Math.toRadians(60.0))
+
+        assertEquals("Arctic physical N-S span must equal 2000m", 2000.0, aPhysicalLatMeters, 0.5)
+        assertEquals("Arctic physical E-W span must equal 2000m", 2000.0, aPhysicalLonMeters, 0.5)
+        assertEquals("At 60°N, longitude degree span must be ~2.0x latitude degree span", 2.0, aLonSpanDeg / aLatSpanDeg, 0.01)
+
+        // 3. Equator (0.0°N, 0.0°E)
+        val equatorRegion = mapManager.createGpsAreaRegion(
+            latitude = 0.0,
+            longitude = 0.0,
+            radiusMeters = radiusMeters
+        )
+        val eqLatSpanDeg = equatorRegion.maxLat - equatorRegion.minLat
+        val eqLonSpanDeg = equatorRegion.maxLon - equatorRegion.minLon
+        assertEquals("At equator, degree spans are nearly 1:1", 1.0, eqLonSpanDeg / eqLatSpanDeg, 0.01)
+    }
+
+    @Test
+    fun testCreateGpsAreaRegion_allSelectableRadiusOptions() {
+        val testRadii = listOf(10f, 500f, 1000f, 3000f)
+
+        testRadii.forEach { radius ->
+            val region = mapManager.createGpsAreaRegion(
+                latitude = 12.9716,
+                longitude = 77.5946,
+                radiusMeters = radius
+            )
+
+            assertNotNull(region)
+            assertTrue("Region must be registered in catalog", mapManager.getAllRegions().any { it.regionId == region.regionId })
+            assertEquals(OfflineRegionStatus.AVAILABLE, region.status)
+            assertTrue(region.contains(12.9716, 77.5946))
+            assertTrue(region.fileSizeBytes > 0L)
+        }
+    }
+
+    @Test
+    fun testEmptyStorageFallback_zeroDownloadedRegionsOnCleanInstall() {
+        // Given a fresh installation with empty disk:
+        val downloaded = mapManager.getDownloadedRegions()
+        assertTrue("Downloaded regions must be strictly empty when disk has 0 mbtiles", downloaded.isEmpty())
+        assertEquals("Total storage used must be exactly 0 bytes", 0L, mapManager.getTotalStorageUsedBytes())
+        assertEquals(0.0f, mapManager.getQuotaUsagePercentage(), 0.001f)
+
+        // Radar/Situational canvas fallback must be active everywhere
+        assertTrue(mapManager.shouldFallbackToCanvas(12.9716, 77.5946))
+        assertTrue(mapManager.shouldFallbackToCanvas(28.6139, 77.2090))
+        assertFalse(mapManager.hasOfflineMapFor(12.9716, 77.5946))
+    }
+
+    @Test
+    fun testPurgeFakeDemoRegions_noFakeSectorAlphaMarkedDownloaded() {
+        val allRegions = mapManager.getAllRegions()
+
+        // Sector Alpha was fake demonstration data in older prototype builds
+        val fakeSectorAlpha = allRegions.find { it.regionId == "region-alpha-metro" || it.name.contains("Sector Alpha") }
+        assertNull("Fake 'Sector Alpha' must not exist in genuine offline map catalog", fakeSectorAlpha)
+
+        // All catalog regions must strictly start in AVAILABLE status, NEVER falsely DOWNLOADED
+        allRegions.forEach { region ->
+            assertFalse(
+                "Region ${region.name} cannot be marked DOWNLOADED when file is absent from disk",
+                region.status == OfflineRegionStatus.DOWNLOADED
+            )
+        }
+    }
 }

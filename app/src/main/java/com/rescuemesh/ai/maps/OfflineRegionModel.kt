@@ -95,4 +95,54 @@ data class OfflineRegionModel(
             String.format(Locale.US, "%.1f MB", mb)
         }
     }
+
+    companion object {
+        const val METERS_PER_LAT_DEGREE = 111132.95
+        const val METERS_PER_LON_DEGREE_EQUATOR = 111320.0
+
+        /**
+         * Calculates an accurate WGS-84 geographic bounding box centered at (latitude, longitude)
+         * with radius [radiusMeters] accounting for cosine latitude scaling:
+         *
+         * Δlat = R / 111132.95
+         * Δlon = R / (111320.0 * max(0.01, cos(Math.toRadians(lat))))
+         */
+        fun calculateBoundingBox(
+            latitude: Double,
+            longitude: Double,
+            radiusMeters: Float
+        ): BoundingBox {
+            require(latitude in -90.0..90.0) { "Latitude must be within [-90.0, 90.0]" }
+            require(radiusMeters > 0f) { "radiusMeters must be positive" }
+
+            val deltaLat = radiusMeters / METERS_PER_LAT_DEGREE
+            val latRad = Math.toRadians(latitude)
+            val cosLat = kotlin.math.max(0.01, kotlin.math.cos(latRad))
+            val deltaLon = radiusMeters / (METERS_PER_LON_DEGREE_EQUATOR * cosLat)
+
+            val minLat = (latitude - deltaLat).coerceIn(-90.0, 90.0)
+            val maxLat = (latitude + deltaLat).coerceIn(-90.0, 90.0)
+            val minLon = (longitude - deltaLon).coerceIn(-180.0, 180.0)
+            val maxLon = (longitude + deltaLon).coerceIn(-180.0, 180.0)
+
+            return BoundingBox(minLat, maxLat, minLon, maxLon)
+        }
+    }
 }
+
+/**
+ * Representation of a geographic bounding box.
+ */
+@Serializable
+data class BoundingBox(
+    val minLat: Double,
+    val maxLat: Double,
+    val minLon: Double,
+    val maxLon: Double
+) {
+    init {
+        require(minLat <= maxLat) { "minLat ($minLat) must be <= maxLat ($maxLat)" }
+        require(minLat in -90.0..90.0 && maxLat in -90.0..90.0) { "Latitude bounds must be within [-90.0, 90.0]" }
+    }
+}
+

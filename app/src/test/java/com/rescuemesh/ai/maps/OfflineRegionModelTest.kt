@@ -121,4 +121,69 @@ class OfflineRegionModelTest {
         )
         assertEquals("1.50 GB", largeRegion.formatSize())
     }
+
+    @Test
+    fun testCalculateBoundingBox_bangalore_accurateCosineScaling() {
+        val box = OfflineRegionModel.calculateBoundingBox(
+            latitude = 12.9716,
+            longitude = 77.5946,
+            radiusMeters = 1000f
+        )
+
+        // Delta Lat = 1000 / 111132.95 = ~0.008998 deg
+        val deltaLat = box.maxLat - 12.9716
+        assertEquals(1000.0 / 111132.95, deltaLat, 0.00001)
+
+        // Delta Lon = 1000 / (111320.0 * cos(12.9716 deg))
+        val cosLat = kotlin.math.cos(Math.toRadians(12.9716))
+        val expectedDeltaLon = 1000.0 / (111320.0 * cosLat)
+        val deltaLon = box.maxLon - 77.5946
+        assertEquals(expectedDeltaLon, deltaLon, 0.00001)
+
+        // Equilateral metric bounds on the ground
+        val latSpanMeters = (box.maxLat - box.minLat) * OfflineRegionModel.METERS_PER_LAT_DEGREE
+        val lonSpanMeters = (box.maxLon - box.minLon) * OfflineRegionModel.METERS_PER_LON_DEGREE_EQUATOR * cosLat
+        assertEquals(2000.0, latSpanMeters, 0.1)
+        assertEquals(2000.0, lonSpanMeters, 0.1)
+    }
+
+    @Test
+    fun testCalculateBoundingBox_poleClamping_doesNotThrowOrOverflow() {
+        // At North Pole (90 deg N)
+        val northPoleBox = OfflineRegionModel.calculateBoundingBox(
+            latitude = 90.0,
+            longitude = 0.0,
+            radiusMeters = 500f
+        )
+
+        // Latitude should be clamped to 90.0 max
+        assertEquals(90.0, northPoleBox.maxLat, 0.00001)
+        assertTrue(northPoleBox.minLat <= 90.0)
+
+        // At South Pole (-90 deg S)
+        val southPoleBox = OfflineRegionModel.calculateBoundingBox(
+            latitude = -90.0,
+            longitude = 0.0,
+            radiusMeters = 500f
+        )
+        assertEquals(-90.0, southPoleBox.minLat, 0.00001)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testCalculateBoundingBox_invalidLatitude_throwsException() {
+        OfflineRegionModel.calculateBoundingBox(
+            latitude = 95.0, // Invalid latitude
+            longitude = 0.0,
+            radiusMeters = 1000f
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testCalculateBoundingBox_nonPositiveRadius_throwsException() {
+        OfflineRegionModel.calculateBoundingBox(
+            latitude = 12.0,
+            longitude = 77.0,
+            radiusMeters = 0f // Non-positive radius
+        )
+    }
 }

@@ -30,6 +30,56 @@ class MapDownloadWorkerTest {
     }
 
     @Test
+    fun testBuildConstraints_withAllowCellularTrue_requiresNetworkConnected() {
+        val constraints = MapDownloadWorker.buildConstraints(allowCellular = true)
+
+        assertEquals(
+            "When allowCellular is true, network constraint must be CONNECTED",
+            NetworkType.CONNECTED,
+            constraints.requiredNetworkType
+        )
+        assertTrue(
+            "Battery not low constraint must be preserved when cellular allowed",
+            constraints.requiresBatteryNotLow()
+        )
+    }
+
+    @Test
+    fun testBuildConstraints_withAllowCellularFalse_requiresNetworkUnmetered() {
+        val constraints = MapDownloadWorker.buildConstraints(allowCellular = false)
+
+        assertEquals(
+            "When allowCellular is false, network constraint must be UNMETERED",
+            NetworkType.UNMETERED,
+            constraints.requiredNetworkType
+        )
+        assertTrue(
+            constraints.requiresBatteryNotLow()
+        )
+    }
+
+    @Test
+    fun testCreateWorkRequest_withCellularPreference_appliesConnectedConstraint() {
+        val region = OfflineRegionModel(
+            regionId = "test_cellular_sector",
+            name = "Cellular Sector",
+            minLat = 10.0,
+            maxLat = 11.0,
+            minLon = 70.0,
+            maxLon = 71.0,
+            fileSizeBytes = 15_000_000L,
+            downloadUrl = "https://openfreemap.org/tiles/test_cellular.mbtiles",
+            fileName = "test_cellular.mbtiles"
+        )
+
+        val workRequestWifi = MapDownloadWorker.createWorkRequest(region, allowCellular = false)
+        assertEquals(NetworkType.UNMETERED, workRequestWifi.workSpec.constraints.requiredNetworkType)
+
+        val workRequestCellular = MapDownloadWorker.createWorkRequest(region, allowCellular = true)
+        assertEquals(NetworkType.CONNECTED, workRequestCellular.workSpec.constraints.requiredNetworkType)
+    }
+
+    @Test
     fun testCreateWorkRequest_setsCorrectInputDataAndTags() {
         val region = OfflineRegionModel(
             regionId = "test_sector_1",

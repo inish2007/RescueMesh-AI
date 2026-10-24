@@ -165,12 +165,13 @@ class MapDownloadWorker(
         var customStreamOpener: ((String) -> InputStream)? = null
 
         /**
-         * Constructs the strict constraints required for background map tile downloads.
-         * Enforces UNMETERED Wi-Fi only and battery not low.
+         * Constructs the constraints required for background map tile downloads.
+         * Enforces UNMETERED Wi-Fi only by default, or CONNECTED if [allowCellular] is explicitly enabled.
          */
-        fun buildConstraints(): Constraints {
+        fun buildConstraints(allowCellular: Boolean = false): Constraints {
+            val networkType = if (allowCellular) NetworkType.CONNECTED else NetworkType.UNMETERED
             return Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.UNMETERED)
+                .setRequiredNetworkType(networkType)
                 .setRequiresBatteryNotLow(true)
                 .build()
         }
@@ -178,9 +179,9 @@ class MapDownloadWorker(
         /**
          * Helper to construct a OneTimeWorkRequest for downloading an offline map region.
          */
-        fun createWorkRequest(region: OfflineRegionModel): OneTimeWorkRequest {
+        fun createWorkRequest(region: OfflineRegionModel, allowCellular: Boolean = false): OneTimeWorkRequest {
             return OneTimeWorkRequestBuilder<MapDownloadWorker>()
-                .setConstraints(buildConstraints())
+                .setConstraints(buildConstraints(allowCellular))
                 .setInputData(
                     workDataOf(
                         KEY_REGION_ID to region.regionId,

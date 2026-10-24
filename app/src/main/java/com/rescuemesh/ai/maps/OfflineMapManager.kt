@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -154,6 +155,57 @@ class OfflineMapManager(
         scanAndSyncStorage()
     }
 
+    /**
+     * Creates, registers, and persists a real GPS-centered bounding box offline region
+     * calculated with accurate cosine latitude scaling.
+     *
+     * @param latitude Center latitude in decimal degrees
+     * @param longitude Center longitude in decimal degrees
+     * @param radiusMeters Radius in meters (e.g., 10m, 500m, 1000m, 3000m)
+     * @param customName Optional custom label for the region
+     * @return The registered and persisted [OfflineRegionModel]
+     */
+    @Synchronized
+    fun createGpsAreaRegion(
+        latitude: Double,
+        longitude: Double,
+        radiusMeters: Float = 1000f,
+        customName: String? = null
+    ): OfflineRegionModel {
+        val box = OfflineRegionModel.calculateBoundingBox(latitude, longitude, radiusMeters)
+
+        val radiusLabel = when {
+            radiusMeters < 1000f -> "${radiusMeters.toInt()}m"
+            else -> "${(radiusMeters / 1000f).toInt()}km"
+        }
+        val regionId = "gps_${System.currentTimeMillis()}"
+        val name = customName ?: "Local GPS Sector ($radiusLabel)"
+        val description = "Real GPS bounding box at ${String.format(Locale.US, "%.4f°N, %.4f°E", latitude, longitude)} (±$radiusLabel)"
+
+        val estimatedBytes = when {
+            radiusMeters <= 50f -> 1_048_576L       // ~1 MB
+            radiusMeters <= 500f -> 8_388_608L      // ~8 MB
+            radiusMeters <= 1000f -> 16_777_216L    // ~16 MB
+            else -> 47_185_920L                     // ~45 MB
+        }
+
+        val model = OfflineRegionModel(
+            regionId = regionId,
+            name = name,
+            description = description,
+            minLat = box.minLat,
+            maxLat = box.maxLat,
+            minLon = box.minLon,
+            maxLon = box.maxLon,
+            fileSizeBytes = estimatedBytes,
+            downloadUrl = "https://openfreemap.org/tiles/gps_area.mbtiles",
+            fileName = "${regionId}.mbtiles"
+        )
+
+        registerRegion(model)
+        return model
+    }
+
     // =========================================================================
     // Storage & Quota Management
     // =========================================================================
@@ -286,10 +338,10 @@ class OfflineMapManager(
 
     /**
      * Enqueues a background download for the specified region using WorkManager.
-     * Enforces unmetered Wi-Fi constraint and storage quota validation.
+     * Enforces unmetered Wi-Fi constraint by default, or allows cellular if [allowCellular] is true.
      */
     @Synchronized
-    fun enqueueDownload(regionId: String): DownloadResult {
+    fun enqueueDownload(regionId: String, allowCellular: Boolean = false): DownloadResult {
         val region = regionsMap[regionId] ?: return DownloadResult.RegionNotFound(regionId)
 
         val targetFile = File(offlineMapsDir, region.fileName)
@@ -307,7 +359,7 @@ class OfflineMapManager(
 
         val wm = workManager ?: return DownloadResult.Error("WorkManager instance not available")
 
-        val workRequest = MapDownloadWorker.createWorkRequest(region)
+        val workRequest = MapDownloadWorker.createWorkRequest(region, allowCellular)
         wm.enqueueUniqueWork(
             "download_map_${region.regionId}",
             ExistingWorkPolicy.REPLACE,
