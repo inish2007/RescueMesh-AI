@@ -1,10 +1,13 @@
 package com.rescuemesh.ai.location
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -185,16 +188,20 @@ class RescueLocationProviderTest {
         fakeLocationProvider.setLocation(fix1)
 
         val collectedFixes = mutableListOf<LocationResult>()
-        val job = launch {
+        val job = launch(Dispatchers.Default) {
             fakeLocationProvider.observeLocationUpdates(intervalMs = 3000L, minDistanceMeters = 1.0f)
                 .take(3)
                 .toList(collectedFixes)
         }
 
+        delay(100)
         fakeLocationProvider.emitLocation(fix2)
+        delay(100)
         fakeLocationProvider.emitLocation(fix3)
 
-        job.join()
+        withTimeout(5000L) {
+            job.join()
+        }
 
         assertEquals(3, collectedFixes.size)
         assertEquals(12.91, collectedFixes[0].latitude, 1e-5)
