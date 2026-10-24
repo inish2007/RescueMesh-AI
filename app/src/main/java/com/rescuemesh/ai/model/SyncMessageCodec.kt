@@ -32,6 +32,8 @@ object SyncMessageCodec {
             is SyncMessage.EvidenceAck -> json.encodeToString(message)
             is SyncMessage.ChatMessage -> json.encodeToString(message)
             is SyncMessage.ChatAck -> json.encodeToString(message)
+            is SyncMessage.PeerLocation -> json.encodeToString(message)
+            is SyncMessage.PeerLocationRevoked -> json.encodeToString(message)
         }
         return json.encodeToString(SyncMessageEnvelope(type = message.type, payload = payload))
     }
@@ -59,6 +61,8 @@ object SyncMessageCodec {
             "EVIDENCE_ACK" -> json.decodeFromString<SyncMessage.EvidenceAck>(envelope.payload)
             "CHAT_MESSAGE" -> json.decodeFromString<SyncMessage.ChatMessage>(envelope.payload)
             "CHAT_ACK" -> json.decodeFromString<SyncMessage.ChatAck>(envelope.payload)
+            "PEER_LOCATION" -> json.decodeFromString<SyncMessage.PeerLocation>(envelope.payload)
+            "PEER_LOCATION_REVOKED" -> json.decodeFromString<SyncMessage.PeerLocationRevoked>(envelope.payload)
             else -> throw IllegalArgumentException("Unknown message type: ${envelope.type}")
         }
     }

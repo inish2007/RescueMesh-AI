@@ -544,6 +544,60 @@ class ChatMeshSyncTest {
     }
 
     // =========================================================================
+    // 9. Consensual Ephemeral Peer Location Sharing & Mission Isolation
+    // =========================================================================
+
+    @Test
+    fun testPeerLocationHandlingAndMissionBoundary() = runBlocking {
+        val peerSharingRepo = com.rescuemesh.ai.location.EphemeralPeerLocationRepository()
+        syncCoordinator.peerSharingRepo = peerSharingRepo
+
+        val now = System.currentTimeMillis()
+        // 1. Valid matching mission location beacon
+        val validBeacon = SyncMessage.PeerLocation(
+            deviceId = "peer-bravo",
+            deviceName = "Bravo Scout",
+            missionId = missionId,
+            latitude = 12.95,
+            longitude = 77.60,
+            accuracy = 3.5f,
+            bearing = 45f,
+            timestamp = now
+        )
+        syncCoordinator.handlePeerLocation("endpoint-bravo", validBeacon)
+
+        assertEquals("Matching mission beacon must be stored in EphemeralPeerLocationRepository", 1, peerSharingRepo.peerCount)
+        val stored = peerSharingRepo.getPeerLocation("peer-bravo")
+        assertNotNull(stored)
+        assertEquals("Bravo Scout", stored?.deviceName)
+        assertEquals(12.95, stored?.latitude ?: 0.0, 1e-6)
+
+        // 2. Foreign mission location beacon
+        val foreignBeacon = SyncMessage.PeerLocation(
+            deviceId = "peer-foreign",
+            deviceName = "Foreign Scout",
+            missionId = "FOREIGN_MISSION_XYZ",
+            latitude = 13.00,
+            longitude = 77.70,
+            timestamp = now
+        )
+        syncCoordinator.handlePeerLocation("endpoint-foreign", foreignBeacon)
+
+        assertEquals("Foreign mission beacon must be dropped", 1, peerSharingRepo.peerCount)
+        assertNull("Foreign peer must not be in repository", peerSharingRepo.getPeerLocation("peer-foreign"))
+
+        // 3. Revocation
+        val revoked = SyncMessage.PeerLocationRevoked(
+            deviceId = "peer-bravo",
+            missionId = missionId
+        )
+        syncCoordinator.handlePeerLocationRevoked("endpoint-bravo", revoked)
+
+        assertEquals("Revocation must remove peer from repository", 0, peerSharingRepo.peerCount)
+        assertNull(peerSharingRepo.getPeerLocation("peer-bravo"))
+    }
+
+    // =========================================================================
     // Test Doubles
     // =========================================================================
 

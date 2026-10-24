@@ -112,6 +112,11 @@ class RescueMeshApp : Application() {
         com.rescuemesh.ai.evidence.PhotoEvidenceManager(this)
     }
 
+    // --- Ephemeral Location Sharing ---
+    val peerSharingRepo: com.rescuemesh.ai.location.EphemeralPeerLocationRepository by lazy {
+        com.rescuemesh.ai.location.EphemeralPeerLocationRepository()
+    }
+
     // --- Mesh ---
     val meshTransport: MeshTransport by lazy {
         NearbyMeshTransport(this) { missionId }
@@ -127,7 +132,9 @@ class RescueMeshApp : Application() {
             scheduler = priorityScheduler,
             mapFusionEngine = mapFusionEngine,
             deviceId = deviceId,
-            missionId = missionId
+            missionId = missionId,
+            chatDao = database.chatDao(),
+            peerSharingRepo = peerSharingRepo
         )
     }
 

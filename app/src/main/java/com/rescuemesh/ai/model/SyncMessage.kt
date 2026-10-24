@@ -130,6 +130,35 @@ sealed class SyncMessage {
         val deviceId: String,
         val acknowledgedMessageIds: List<String>
     ) : SyncMessage()
+
+    /**
+     * Consensual ephemeral peer live location beacon (10-minute TTL).
+     * Volatile in-memory only; never persisted to SQLite Room database.
+     */
+    @Serializable
+    data class PeerLocation(
+        override val type: String = "PEER_LOCATION",
+        val deviceId: String,
+        val deviceName: String,
+        val missionId: String,
+        val latitude: Double,
+        val longitude: Double,
+        val accuracy: Float? = null,
+        val bearing: Float? = null,
+        val speed: Float? = null,
+        val altitude: Double? = null,
+        val timestamp: Long = System.currentTimeMillis()
+    ) : SyncMessage()
+
+    /**
+     * Explicit revocation of ephemeral peer live location sharing.
+     */
+    @Serializable
+    data class PeerLocationRevoked(
+        override val type: String = "PEER_LOCATION_REVOKED",
+        val deviceId: String,
+        val missionId: String
+    ) : SyncMessage()
 }
 
 /**

@@ -117,4 +117,60 @@ class SyncMessageCodecChatTest {
         assertEquals(chat.authorSequence, restored.authorSequence)
         assertEquals(chat.relayHopsRemaining, restored.relayHopsRemaining)
     }
+
+    @Test
+    fun testPeerLocationRoundtrip() {
+        val location = SyncMessage.PeerLocation(
+            deviceId = "device-alpha-1",
+            deviceName = "Tactical Unit 1",
+            missionId = "MISSION-FLOOD-99",
+            latitude = 12.971598,
+            longitude = 77.594562,
+            accuracy = 4.2f,
+            bearing = 180.5f,
+            speed = 1.2f,
+            altitude = 920.0,
+            timestamp = 1729765000000L
+        )
+
+        val serialized = SyncMessageCodec.serializeToString(location)
+        assertTrue("Envelope must have PEER_LOCATION type", serialized.contains("\"type\":\"PEER_LOCATION\""))
+
+        val deserialized = SyncMessageCodec.deserializeFromString(serialized)
+        assertTrue(deserialized is SyncMessage.PeerLocation)
+
+        val restored = deserialized as SyncMessage.PeerLocation
+        assertEquals("device-alpha-1", restored.deviceId)
+        assertEquals("Tactical Unit 1", restored.deviceName)
+        assertEquals("MISSION-FLOOD-99", restored.missionId)
+        assertEquals(12.971598, restored.latitude, 1e-6)
+        assertEquals(77.594562, restored.longitude, 1e-6)
+        assertEquals(4.2f, restored.accuracy ?: 0f, 0.01f)
+        assertEquals(180.5f, restored.bearing ?: 0f, 0.01f)
+        assertEquals(1.2f, restored.speed ?: 0f, 0.01f)
+        assertEquals(920.0, restored.altitude ?: 0.0, 1e-3)
+        assertEquals(1729765000000L, restored.timestamp)
+
+        // Wire size check
+        val bytes = SyncMessageCodec.calculatePayloadBytes(location)
+        assertTrue("Peer location wire size must be compact (< 400 bytes)", bytes in 150..400)
+    }
+
+    @Test
+    fun testPeerLocationRevokedRoundtrip() {
+        val revoked = SyncMessage.PeerLocationRevoked(
+            deviceId = "device-alpha-1",
+            missionId = "MISSION-FLOOD-99"
+        )
+
+        val serialized = SyncMessageCodec.serializeToString(revoked)
+        assertTrue("Envelope must have PEER_LOCATION_REVOKED type", serialized.contains("\"type\":\"PEER_LOCATION_REVOKED\""))
+
+        val deserialized = SyncMessageCodec.deserializeFromString(serialized)
+        assertTrue(deserialized is SyncMessage.PeerLocationRevoked)
+
+        val restored = deserialized as SyncMessage.PeerLocationRevoked
+        assertEquals("device-alpha-1", restored.deviceId)
+        assertEquals("MISSION-FLOOD-99", restored.missionId)
+    }
 }

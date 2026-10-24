@@ -24,6 +24,8 @@ class SyncMessageTest {
             is SyncMessage.EvidenceAck -> json.encodeToString(message)
             is SyncMessage.ChatMessage -> json.encodeToString(message)
             is SyncMessage.ChatAck -> json.encodeToString(message)
+            is SyncMessage.PeerLocation -> json.encodeToString(message)
+            is SyncMessage.PeerLocationRevoked -> json.encodeToString(message)
         }
         return json.encodeToString(SyncMessageEnvelope(type = message.type, payload = payload))
     }
@@ -41,6 +43,8 @@ class SyncMessageTest {
             "EVIDENCE_ACK" -> json.decodeFromString<SyncMessage.EvidenceAck>(envelope.payload)
             "CHAT_MESSAGE" -> json.decodeFromString<SyncMessage.ChatMessage>(envelope.payload)
             "CHAT_ACK" -> json.decodeFromString<SyncMessage.ChatAck>(envelope.payload)
+            "PEER_LOCATION" -> json.decodeFromString<SyncMessage.PeerLocation>(envelope.payload)
+            "PEER_LOCATION_REVOKED" -> json.decodeFromString<SyncMessage.PeerLocationRevoked>(envelope.payload)
             else -> throw IllegalArgumentException("Unknown message type: ${envelope.type}")
         }
     }
@@ -260,6 +264,44 @@ class SyncMessageTest {
         val result = deserialized as SyncMessage.EventAck
         assertEquals("dev-beta", result.deviceId)
         assertEquals(listOf("evt-100", "evt-101", "evt-102"), result.acknowledgedEventIds)
+    }
+
+    @Test
+    fun testPeerLocationEnvelopeRoundTrip() {
+        val peerLocation = SyncMessage.PeerLocation(
+            deviceId = "dev-gamma",
+            deviceName = "Gamma Responder",
+            missionId = "mission-1",
+            latitude = 37.7749,
+            longitude = -122.4194,
+            accuracy = 3.2f,
+            timestamp = 1700000010000L
+        )
+        val envelopeJson = serializeToEnvelope(peerLocation)
+        val deserialized = deserializeFromEnvelope(envelopeJson)
+        assertTrue(deserialized is SyncMessage.PeerLocation)
+        val result = deserialized as SyncMessage.PeerLocation
+        assertEquals("PEER_LOCATION", result.type)
+        assertEquals("dev-gamma", result.deviceId)
+        assertEquals(37.7749, result.latitude, 1e-6)
+        assertEquals(-122.4194, result.longitude, 1e-6)
+        assertEquals(3.2f, result.accuracy!!, 1e-3f)
+        assertEquals(1700000010000L, result.timestamp)
+    }
+
+    @Test
+    fun testPeerLocationRevokedEnvelopeRoundTrip() {
+        val revoked = SyncMessage.PeerLocationRevoked(
+            deviceId = "dev-gamma",
+            missionId = "mission-1"
+        )
+        val envelopeJson = serializeToEnvelope(revoked)
+        val deserialized = deserializeFromEnvelope(envelopeJson)
+        assertTrue(deserialized is SyncMessage.PeerLocationRevoked)
+        val result = deserialized as SyncMessage.PeerLocationRevoked
+        assertEquals("PEER_LOCATION_REVOKED", result.type)
+        assertEquals("dev-gamma", result.deviceId)
+        assertEquals("mission-1", result.missionId)
     }
 
     @Test(expected = IllegalArgumentException::class)

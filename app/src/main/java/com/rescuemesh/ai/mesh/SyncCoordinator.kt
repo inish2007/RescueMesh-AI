@@ -12,6 +12,8 @@ import com.rescuemesh.ai.data.repository.ObservationRepository
 import com.rescuemesh.ai.data.repository.SyncRepository
 import com.rescuemesh.ai.intelligence.MapFusionEngine
 import com.rescuemesh.ai.intelligence.PriorityScheduler
+import com.rescuemesh.ai.location.EphemeralPeerLocationRepository
+import com.rescuemesh.ai.location.PeerLocationBeacon
 import com.rescuemesh.ai.model.PeerInfo
 import com.rescuemesh.ai.model.SyncMessage
 import com.rescuemesh.ai.model.SyncObservation
@@ -47,9 +49,11 @@ class SyncCoordinator(
     private val missionId: String,
     evidenceDir: File? = null,
     evidenceDirectory: File? = null,
-    chatDao: ChatDao? = null
+    chatDao: ChatDao? = null,
+    peerSharingRepo: EphemeralPeerLocationRepository? = null
 ) {
     var chatDao: ChatDao? = chatDao
+    var peerSharingRepo: EphemeralPeerLocationRepository? = peerSharingRepo
     companion object {
         private const val TAG = "SyncCoordinator"
         private const val SYNC_INTERVAL_MS = 30_000L  // Re-sync every 30 seconds
@@ -331,6 +335,14 @@ class SyncCoordinator(
 
             is SyncMessage.EvidenceAck -> {
                 handleEvidenceAck(endpointId, message)
+            }
+
+            is SyncMessage.PeerLocation -> {
+                handlePeerLocation(endpointId, message)
+            }
+
+            is SyncMessage.PeerLocationRevoked -> {
+                handlePeerLocationRevoked(endpointId, message)
             }
         }
     }
@@ -719,6 +731,48 @@ class SyncCoordinator(
             }
         }
         Log.d(TAG, "Chat ACK received for ${ack.acknowledgedMessageIds.size} messages from ${ack.deviceId}")
+    }
+
+    // --- Ephemeral Peer Location Handling ---
+
+    suspend fun handlePeerLocation(endpointId: String, message: SyncMessage.PeerLocation) {
+        if (message.missionId != this.missionId) {
+            Log.w(TAG, "Dropped peer location from ${message.deviceId}: foreign mission ${message.missionId} != this $missionId")
+            return
+        }
+
+        val beacon = PeerLocationBeacon(
+            deviceId = message.deviceId,
+            deviceName = message.deviceName,
+            missionId = message.missionId,
+            latitude = message.latitude,
+            longitude = message.longitude,
+            accuracy = message.accuracy,
+            bearing = message.bearing,
+            speed = message.speed,
+            altitude = message.altitude,
+            timestamp = message.timestamp
+        )
+        peerSharingRepo?.updatePeerLocation(beacon, currentMissionId = this.missionId)
+        Log.d(TAG, "Updated ephemeral peer location for ${message.deviceId} (${message.deviceName})")
+    }
+
+    suspend fun handlePeerLocation(message: SyncMessage.PeerLocation) {
+        handlePeerLocation("", message)
+    }
+
+    suspend fun handlePeerLocationRevoked(endpointId: String, message: SyncMessage.PeerLocationRevoked) {
+        if (message.missionId != this.missionId) {
+            Log.w(TAG, "Dropped peer location revocation from ${message.deviceId}: foreign mission ${message.missionId} != this $missionId")
+            return
+        }
+
+        peerSharingRepo?.removePeer(message.deviceId)
+        Log.d(TAG, "Revoked ephemeral peer location for ${message.deviceId}")
+    }
+
+    suspend fun handlePeerLocationRevoked(message: SyncMessage.PeerLocationRevoked) {
+        handlePeerLocationRevoked("", message)
     }
 
     // --- Relay ---

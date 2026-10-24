@@ -541,8 +541,8 @@ fun ChatBubbleItem(
     // Truthful Delivery Badge String
     val deliveryStatusText = remember(message.status, message.ackPeerCount, message.isLocal) {
         when (message.status) {
-            ChatMessageEntity.STATUS_SENDING -> "Saved locally"
-            ChatMessageEntity.STATUS_QUEUED -> "Queued"
+            ChatMessageEntity.STATUS_SENDING -> "Saved locally on this phone"
+            ChatMessageEntity.STATUS_QUEUED -> "Queued for mesh transfer"
             ChatMessageEntity.STATUS_SENT_TO_PEERS -> {
                 if (message.ackPeerCount <= 1) "Sent to 1 peer"
                 else "Sent to ${message.ackPeerCount} peers"
@@ -550,7 +550,7 @@ fun ChatBubbleItem(
             ChatMessageEntity.STATUS_DELIVERED_TO_ALL -> "Delivered to mesh cluster"
             ChatMessageEntity.STATUS_FAILED -> "Failed to queue"
             ChatMessageEntity.STATUS_RECEIVED -> "Received"
-            else -> if (message.isLocal) "Saved locally" else "Received"
+            else -> if (message.isLocal) "Saved locally on this phone" else "Received"
         }
     }
 

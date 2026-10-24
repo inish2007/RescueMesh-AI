@@ -87,6 +87,14 @@ class EphemeralPeerLocationRepository(
         _activePeers.value = emptyList()
     }
 
+    /**
+     * Removes an ephemeral peer location beacon upon explicit revocation.
+     */
+    fun removePeer(deviceId: String) {
+        peerMap.remove(deviceId)
+        _activePeers.value = peerMap.values.toList().sortedBy { it.deviceId }
+    }
+
     val peerCount: Int
         get() = peerMap.size
 }
