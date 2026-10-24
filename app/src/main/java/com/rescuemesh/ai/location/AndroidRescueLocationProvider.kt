@@ -12,10 +12,16 @@ import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -97,6 +103,119 @@ class AndroidRescueLocationProvider(
         Log.d(TAG, "No current location acquired within timeout of ${timeoutMillis}ms")
         null
     }
+
+    @SuppressLint("MissingPermission")
+    override fun observeLocationUpdates(
+        intervalMs: Long,
+        minDistanceMeters: Float
+    ): Flow<LocationResult> = callbackFlow {
+        if (!hasLocationPermission()) {
+            Log.w(TAG, "Location permission not granted for observeLocationUpdates")
+            close()
+            return@callbackFlow
+        }
+
+        var registeredWithFused = false
+        var fusedCallback: LocationCallback? = null
+
+        if (fusedClient != null) {
+            try {
+                val priority = if (hasFineLocationPermission()) {
+                    Priority.PRIORITY_HIGH_ACCURACY
+                } else {
+                    Priority.PRIORITY_BALANCED_POWER_ACCURACY
+                }
+                val request = LocationRequest.Builder(priority, intervalMs).apply {
+                    setMinUpdateIntervalMillis(intervalMs / 2)
+                    setMinUpdateDistanceMeters(minDistanceMeters)
+                    setWaitForAccurateLocation(false)
+                }.build()
+
+                val callback = object : LocationCallback() {
+                    override fun onLocationResult(result: com.google.android.gms.location.LocationResult) {
+                        result.lastLocation?.let { loc ->
+                            trySend(loc.toLocationResult("fused"))
+                        }
+                    }
+                }
+                fusedCallback = callback
+                fusedClient.requestLocationUpdates(request, callback, Looper.getMainLooper())
+                registeredWithFused = true
+                Log.d(TAG, "Registered for location updates via FusedLocationProviderClient")
+            } catch (e: SecurityException) {
+                Log.w(TAG, "SecurityException registering Fused updates: ${e.message}")
+            } catch (e: Exception) {
+                Log.w(TAG, "Exception registering Fused updates: ${e.message}")
+            }
+        }
+
+        var lmListener: LocationListener? = null
+        if (!registeredWithFused) {
+            val lm = locationManager
+            if (lm != null) {
+                val isGpsEnabled = hasFineLocationPermission() && try {
+                    lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                } catch (_: Exception) { false }
+
+                val isNetworkEnabled = try {
+                    lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                } catch (_: Exception) { false }
+
+                val providerToUse = when {
+                    isGpsEnabled -> LocationManager.GPS_PROVIDER
+                    isNetworkEnabled -> LocationManager.NETWORK_PROVIDER
+                    else -> null
+                }
+
+                if (providerToUse != null) {
+                    val listener = object : LocationListener {
+                        override fun onLocationChanged(location: Location) {
+                            trySend(location.toLocationResult(providerToUse))
+                        }
+
+                        @Deprecated("Deprecated in Java")
+                        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                        override fun onProviderEnabled(provider: String) {}
+                        override fun onProviderDisabled(provider: String) {}
+                    }
+                    lmListener = listener
+                    try {
+                        lm.requestLocationUpdates(
+                            providerToUse,
+                            intervalMs,
+                            minDistanceMeters,
+                            listener,
+                            Looper.getMainLooper()
+                        )
+                        Log.d(TAG, "Registered for location updates via LocationManager ($providerToUse)")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Exception registering LocationManager updates: ${e.message}")
+                    }
+                } else {
+                    Log.d(TAG, "No LocationManager provider enabled for updates")
+                }
+            }
+        }
+
+        awaitClose {
+            if (registeredWithFused && fusedCallback != null) {
+                try {
+                    fusedClient?.removeLocationUpdates(fusedCallback)
+                    Log.d(TAG, "Removed Fused location updates")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error removing Fused updates: ${e.message}")
+                }
+            }
+            if (lmListener != null) {
+                try {
+                    locationManager?.removeUpdates(lmListener)
+                    Log.d(TAG, "Removed LocationManager updates")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error removing LocationManager updates: ${e.message}")
+                }
+            }
+        }
+    }.flowOn(Dispatchers.Default)
 
     // --- Permissions Verification ---
 
@@ -319,7 +438,10 @@ class AndroidRescueLocationProvider(
             longitude = longitude,
             accuracy = if (hasAccuracy()) accuracy else null,
             provider = sourceProvider,
-            timestamp = if (time > 0) time else System.currentTimeMillis()
+            timestamp = if (time > 0) time else System.currentTimeMillis(),
+            bearing = if (hasBearing()) bearing else null,
+            speed = if (hasSpeed()) speed else null,
+            altitude = if (hasAltitude()) altitude else null
         )
     }
 }
