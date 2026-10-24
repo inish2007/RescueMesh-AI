@@ -225,6 +225,7 @@ data class SituationalPoint(
     val accuracy: Float? = null,
     val timestamp: Long = 0L,
     val isLocal: Boolean = false,
+    val bearing: Float? = null,
     val rawObservation: Any? = null
 )
 

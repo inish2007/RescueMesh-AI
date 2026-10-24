@@ -58,7 +58,17 @@ class AndroidRescueLocationProvider(
         private const val TAG = "RescueLocationProvider"
         const val DEFAULT_TIMEOUT_MS = 8_000L
         const val FAST_TIMEOUT_MS = 3_000L
+        const val DEFAULT_UPDATE_INTERVAL_MS = 2000L
+        const val DEFAULT_MIN_DISTANCE_METERS = 0.5f
     }
+
+    /**
+     * Emits continuous 2-second location updates (min displacement 0.5m) for real-time foreground tracking.
+     */
+    fun observeContinuousLocationUpdates(
+        intervalMs: Long = DEFAULT_UPDATE_INTERVAL_MS,
+        minDistanceMeters: Float = DEFAULT_MIN_DISTANCE_METERS
+    ): Flow<LocationResult> = observeLocationUpdates(intervalMs, minDistanceMeters)
 
     override suspend fun getLastKnownLocation(): LocationResult? = withContext(Dispatchers.IO) {
         if (!hasLocationPermission()) {

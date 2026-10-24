@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.rescuemesh.ai.data.entity.MapEdgeEntity
 import com.rescuemesh.ai.data.entity.MapNodeEntity
 import com.rescuemesh.ai.data.entity.ObservationEntity
@@ -41,6 +42,7 @@ import com.rescuemesh.ai.intelligence.MarkerCluster
 import com.rescuemesh.ai.intelligence.MarkerClusterEngine
 import com.rescuemesh.ai.intelligence.RoutePlanner
 import com.rescuemesh.ai.location.LocationResult
+import com.rescuemesh.ai.location.PeerLocationBeacon
 import com.rescuemesh.ai.ui.theme.*
 
 /**
@@ -56,6 +58,7 @@ fun MapScreen(
     edges: List<MapEdgeEntity> = emptyList(),
     observations: List<ObservationEntity> = emptyList(),
     userLocation: LocationResult? = null,
+    peerLocations: List<PeerLocationBeacon> = emptyList(),
     onNavigateToObservationDetail: ((String) -> Unit)? = null,
     onNavigateToChat: ((String) -> Unit)? = null,
     onFindRoute: (fromNodeId: String, toNodeId: String) -> RoutePlanner.RouteResult?
@@ -90,7 +93,7 @@ fun MapScreen(
     val geoObservations = remember(observations) {
         observations.filter { it.latitude != null && it.longitude != null }
     }
-    val hasCoordinates = userLocation != null || geoObservations.isNotEmpty()
+    val hasCoordinates = userLocation != null || geoObservations.isNotEmpty() || peerLocations.isNotEmpty()
 
     val topBarTitle = when {
         hasSurveyedGraph -> "Tactical Graph & Routes"
@@ -100,7 +103,13 @@ fun MapScreen(
 
     val topBarSubtitle = when {
         hasSurveyedGraph -> "${nodes.size} Nodes • ${edges.size} Edges"
-        hasCoordinates -> "1 km × 1 km • ${geoObservations.size} Geo Reports"
+        hasCoordinates -> {
+            val countItems = mutableListOf<String>()
+            if (geoObservations.isNotEmpty()) countItems.add("${geoObservations.size} Geo Reports")
+            if (peerLocations.isNotEmpty()) countItems.add("${peerLocations.size} Peers")
+            val detail = if (countItems.isNotEmpty()) countItems.joinToString(" • ") else "Ready"
+            "1 km × 1 km • $detail"
+        }
         else -> "GPS Unavailable • ${observations.size} Unlocated Reports"
     }
 
@@ -195,6 +204,7 @@ fun MapScreen(
                     SituationalCanvasView(
                         geoObservations = geoObservations,
                         userLocation = userLocation,
+                        peerLocations = peerLocations,
                         selectedPoint = selectedSituationalPoint,
                         onPointSelected = { selectedSituationalPoint = it },
                         onDismissSelection = { selectedSituationalPoint = null },
@@ -219,6 +229,107 @@ fun MapScreen(
 }
 
 private val TacticalBlue = Color(0xFF2196F3)
+private val TacticalTeal = Color(0xFF00BFA5)
+
+/**
+ * North-up cardinal compass crosshair HUD:
+ *         N
+ *         ↑
+ *     W   +   E
+ *         ↓
+ *         S
+ * Floating tactical Card anchored at Alignment.TopStart (start = 14.dp, top = 110.dp)
+ * in SituationalCanvasView. Dimensions 74dp x 86dp, containerColor SurfaceDark alpha 0.88f,
+ * bold Amber 'N' and arrow, reticle, and 'NORTH-UP' label.
+ */
+@Composable
+fun CardinalCompassHud(
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .width(74.dp)
+            .height(86.dp),
+        colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.88f)),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, SurfaceBorder.copy(alpha = 0.75f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            // North indicator: Bold Amber 'N' and arrow
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "N",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = PrimaryAmber
+                )
+                Spacer(modifier = Modifier.width(2.dp))
+                Text(
+                    text = "↑",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = PrimaryAmber
+                )
+            }
+            // E-W axis with center reticle '+'
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "W",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = TextSecondary
+                )
+                Text(
+                    text = "+",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = TextTertiary
+                )
+                Text(
+                    text = "E",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = TextSecondary
+                )
+            }
+            // South indicator: Down arrow and 'S'
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "↓",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = TextSecondary
+                )
+                Spacer(modifier = Modifier.width(2.dp))
+                Text(
+                    text = "S",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = TextSecondary
+                )
+            }
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = "NORTH-UP",
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
+                fontWeight = FontWeight.SemiBold,
+                color = TextTertiary
+            )
+        }
+    }
+}
 
 /**
  * Tier 2: 1 km x 1 km metric situational canvas plotting SOS, hazards, and observations
@@ -229,6 +340,7 @@ private val TacticalBlue = Color(0xFF2196F3)
 private fun SituationalCanvasView(
     geoObservations: List<ObservationEntity>,
     userLocation: LocationResult?,
+    peerLocations: List<PeerLocationBeacon> = emptyList(),
     selectedPoint: ProjectedSituationalPoint?,
     onPointSelected: (ProjectedSituationalPoint) -> Unit,
     onDismissSelection: () -> Unit,
@@ -239,18 +351,20 @@ private fun SituationalCanvasView(
     val padPx = with(density) { 36.dp.toPx() }
     val tapHitRadiusPx = with(density) { 36.dp.toPx() }
 
-    val allGeoPoints = remember(geoObservations, userLocation) {
+    val allGeoPoints = remember(geoObservations, userLocation, peerLocations) {
         val obsPoints = geoObservations.mapNotNull { obs ->
             val lat = obs.latitude
             val lon = obs.longitude
             if (lat != null && lon != null) GeoPoint(lat, lon) else null
         }
-        if (userLocation != null) obsPoints + GeoPoint(userLocation.latitude, userLocation.longitude) else obsPoints
+        val peerPoints = peerLocations.map { GeoPoint(it.latitude, it.longitude) }
+        val combined = obsPoints + peerPoints
+        if (userLocation != null) combined + GeoPoint(userLocation.latitude, userLocation.longitude) else combined
     }
 
     val cameraStateMachine = remember {
-        val initialCenterLat = userLocation?.latitude ?: geoObservations.firstOrNull()?.latitude ?: 0.0
-        val initialCenterLon = userLocation?.longitude ?: geoObservations.firstOrNull()?.longitude ?: 0.0
+        val initialCenterLat = userLocation?.latitude ?: geoObservations.firstOrNull()?.latitude ?: peerLocations.firstOrNull()?.latitude ?: 0.0
+        val initialCenterLon = userLocation?.longitude ?: geoObservations.firstOrNull()?.longitude ?: peerLocations.firstOrNull()?.longitude ?: 0.0
         val initialLoc = if (userLocation != null) GeoPoint(userLocation.latitude, userLocation.longitude) else null
         CameraStateMachine(
             com.rescuemesh.ai.intelligence.TacticalCameraState(
@@ -279,8 +393,15 @@ private fun SituationalCanvasView(
         cameraState = cameraStateMachine.onPointsUpdated(allGeoPoints)
     }
 
-    val points = remember(geoObservations) {
-        geoObservations.map { obs ->
+    // Synchronize peer locations updates
+    LaunchedEffect(peerLocations) {
+        if (cameraState.mode == CameraMode.FIT_ALL) {
+            cameraState = cameraStateMachine.onPointsUpdated(allGeoPoints)
+        }
+    }
+
+    val points = remember(geoObservations, peerLocations) {
+        val obsPoints = geoObservations.map { obs ->
             SituationalPoint(
                 id = obs.eventId,
                 latitude = obs.latitude!!,
@@ -294,6 +415,22 @@ private fun SituationalCanvasView(
                 rawObservation = obs
             )
         }
+        val peerPoints = peerLocations.map { peer ->
+            SituationalPoint(
+                id = peer.deviceId,
+                latitude = peer.latitude,
+                longitude = peer.longitude,
+                label = peer.deviceName.ifBlank { "Peer ${peer.deviceId.take(4)}" },
+                type = "PEER",
+                status = null,
+                accuracy = peer.accuracy,
+                timestamp = peer.timestamp,
+                isLocal = false,
+                bearing = peer.bearing,
+                rawObservation = peer
+            )
+        }
+        obsPoints + peerPoints
     }
 
     var currentLayout by remember { mutableStateOf<SituationalCanvasLayout?>(null) }
@@ -513,6 +650,7 @@ private fun SituationalCanvasView(
                     val glowColor = when {
                         cluster.hasSos -> StatusBlocked
                         cluster.hasHazard -> StatusHazard
+                        cluster.points.any { it.type == "PEER" } -> TacticalTeal
                         else -> TacticalBlue
                     }
 
@@ -556,8 +694,9 @@ private fun SituationalCanvasView(
 
                     if (proj.isWithinBounds) {
                         if (proj.accuracyRadiusPx > 4f) {
+                            val haloColor = if (pt.type == "PEER") TacticalTeal else PrimaryAmber
                             drawCircle(
-                                color = PrimaryAmber.copy(alpha = 0.1f),
+                                color = haloColor.copy(alpha = 0.15f),
                                 radius = proj.accuracyRadiusPx,
                                 center = proj.canvasOffset
                             )
@@ -567,7 +706,33 @@ private fun SituationalCanvasView(
                             "SOS" -> StatusBlocked to "SOS"
                             "HAZARD" -> StatusHazard to "HZ"
                             "ROUTE_STATUS" -> (if (pt.status == "OPEN") StatusClear else StatusBlocked) to (if (pt.status == "OPEN") "OP" else "BL")
+                            "PEER" -> TacticalTeal to "PEER"
                             else -> TacticalBlue to "NOTE"
+                        }
+
+                        // Peer Heading Cone (wedge pointing in direction of bearing)
+                        if (pt.type == "PEER" && pt.bearing != null && pt.bearing >= 0f) {
+                            val coneRadiusPx = 28.dp.toPx()
+                            val sweepAngle = 45.0
+                            val startAngleRad = Math.toRadians((pt.bearing - 90.0 - sweepAngle / 2.0))
+                            val endAngleRad = Math.toRadians((pt.bearing - 90.0 + sweepAngle / 2.0))
+
+                            val conePath = Path().apply {
+                                moveTo(proj.canvasOffset.x, proj.canvasOffset.y)
+                                lineTo(
+                                    (proj.canvasOffset.x + coneRadiusPx * kotlin.math.cos(startAngleRad)).toFloat(),
+                                    (proj.canvasOffset.y + coneRadiusPx * kotlin.math.sin(startAngleRad)).toFloat()
+                                )
+                                lineTo(
+                                    (proj.canvasOffset.x + coneRadiusPx * kotlin.math.cos(endAngleRad)).toFloat(),
+                                    (proj.canvasOffset.y + coneRadiusPx * kotlin.math.sin(endAngleRad)).toFloat()
+                                )
+                                close()
+                            }
+                            drawPath(
+                                path = conePath,
+                                color = TacticalTeal.copy(alpha = 0.35f)
+                            )
                         }
 
                         // SOS High-Visibility Outer Ring
@@ -622,6 +787,7 @@ private fun SituationalCanvasView(
                         val (tagColor, tagPrefix) = when (pt.type) {
                             "SOS" -> StatusBlocked to "SOS"
                             "HAZARD" -> StatusHazard to "HZ"
+                            "PEER" -> TacticalTeal to "PEER"
                             else -> TextTertiary to "PT"
                         }
 
@@ -723,6 +889,13 @@ private fun SituationalCanvasView(
             }
         }
 
+        // Cardinal Compass HUD anchored at Alignment.TopStart (start = 14.dp, top = 110.dp)
+        CardinalCompassHud(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = 14.dp, top = 110.dp)
+        )
+
         // Floating Controls on Right Side (Zoom + Recenter)
         Column(
             modifier = Modifier
@@ -801,7 +974,12 @@ private fun SituationalCanvasView(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Surface(
-                                color = if (proj.point.type == "SOS") StatusBlocked else if (proj.point.type == "HAZARD") StatusHazard else TacticalBlue,
+                                color = when (proj.point.type) {
+                                    "SOS" -> StatusBlocked
+                                    "HAZARD" -> StatusHazard
+                                    "PEER" -> TacticalTeal
+                                    else -> TacticalBlue
+                                },
                                 shape = RoundedCornerShape(6.dp)
                             ) {
                                 Text(
@@ -859,6 +1037,19 @@ private fun SituationalCanvasView(
                             val accStr = if (acc != null && acc > 0f) "±${acc.toInt()}m" else "Estimated"
                             Text(accStr, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
                         }
+                    }
+
+                    if (proj.point.type == "PEER") {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        val ageMs = System.currentTimeMillis() - proj.point.timestamp
+                        val ageSec = (ageMs / 1000).coerceAtLeast(0)
+                        val ageStr = if (ageSec < 60) "${ageSec}s ago" else "${ageSec / 60}m ago"
+                        Text(
+                            text = "Consented Peer Beacon • Last fix $ageStr • ID: ${proj.point.id.take(8)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TacticalTeal,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
 
                     if (!proj.point.status.isNullOrBlank()) {
@@ -940,20 +1131,22 @@ private fun SituationalCanvasView(
                             }
                         }
 
-                        Button(
-                            onClick = { onNavigateToObservationDetail?.invoke(proj.point.id) },
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = PrimaryAmber,
-                                contentColor = BackgroundDark
-                            )
-                        ) {
-                            Icon(Icons.Filled.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Details")
+                        if (obs != null) {
+                            Button(
+                                onClick = { onNavigateToObservationDetail?.invoke(proj.point.id) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = PrimaryAmber,
+                                    contentColor = BackgroundDark
+                                )
+                            ) {
+                                Icon(Icons.Filled.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Details")
+                            }
                         }
                     }
                 }
@@ -995,14 +1188,19 @@ private fun SituationalCanvasView(
                                     },
                                 color = SurfaceVariant,
                                 shape = RoundedCornerShape(8.dp),
-                                border = BorderStroke(1.dp, if (pt.type == "SOS") StatusBlocked else SurfaceBorder)
+                                border = BorderStroke(1.dp, if (pt.type == "SOS") StatusBlocked else if (pt.type == "PEER") TacticalTeal else SurfaceBorder)
                             ) {
                                 Row(
                                     modifier = Modifier.padding(10.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Surface(
-                                        color = if (pt.type == "SOS") StatusBlocked else if (pt.type == "HAZARD") StatusHazard else TacticalBlue,
+                                        color = when (pt.type) {
+                                            "SOS" -> StatusBlocked
+                                            "HAZARD" -> StatusHazard
+                                            "PEER" -> TacticalTeal
+                                            else -> TacticalBlue
+                                        },
                                         shape = RoundedCornerShape(4.dp)
                                     ) {
                                         Text(
