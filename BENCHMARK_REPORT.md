@@ -26,7 +26,7 @@ All simulations execute 100% in-memory on the JVM using headless multi-node virt
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **VOI** | 1.00 | 100.0 ms | 1.00 | 29920 B | 40 | 0.001337 |
 | **FIFO** | 9.00 | 900.0 ms | 7.00 | 232080 B | 40 | 0.000172 |
-| **RANDOM** | 1.80 | 180.0 ms | 1.60 | 77924 B | 40 | 0.000513 |
+| **RANDOM** | 1.80 | 180.0 ms | 1.40 | 72818 B | 40 | 0.000549 |
 
 ---
 
@@ -99,12 +99,12 @@ All simulations execute 100% in-memory on the JVM using headless multi-node virt
             "schedulerType": "RANDOM",
             "avgHazardPropagationRounds": 1.8,
             "avgHazardPropagationTimeMs": 180.0,
-            "mapConvergenceRounds": 1.6,
-            "totalPayloadBytesTransferred": 77924,
+            "mapConvergenceRounds": 1.4,
+            "totalPayloadBytesTransferred": 72818,
             "usefulObservationsPropagated": 40,
-            "bandwidthEfficiencyRatio": 5.133206714234383E-4
+            "bandwidthEfficiencyRatio": 5.493147298744816E-4
         }
     },
-    "timestamp": 1792832287925
+    "timestamp": 1792854874892
 }
 ```
