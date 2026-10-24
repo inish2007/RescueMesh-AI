@@ -123,7 +123,7 @@ class SyncCoordinator(
             }
         }
         // Listen for incoming messages
-        scope.launch {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
             transport.incomingMessages.collect { (endpointId, message) ->
                 try {
                     handleMessage(endpointId, message)
@@ -136,7 +136,7 @@ class SyncCoordinator(
         }
 
         // Listen for incoming file payload transfers (Stage 2)
-        scope.launch {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
             transport.incomingFiles.collect { transfer ->
                 if (transfer != null) {
                     try {
