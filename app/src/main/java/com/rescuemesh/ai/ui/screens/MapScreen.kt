@@ -4,6 +4,7 @@ import android.graphics.Paint
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
@@ -30,6 +32,13 @@ import androidx.compose.ui.unit.dp
 import com.rescuemesh.ai.data.entity.MapEdgeEntity
 import com.rescuemesh.ai.data.entity.MapNodeEntity
 import com.rescuemesh.ai.data.entity.ObservationEntity
+import com.rescuemesh.ai.intelligence.AutoFitViewportCalculator
+import com.rescuemesh.ai.intelligence.CameraMode
+import com.rescuemesh.ai.intelligence.CameraStateMachine
+import com.rescuemesh.ai.intelligence.CameraTarget
+import com.rescuemesh.ai.intelligence.GeoPoint
+import com.rescuemesh.ai.intelligence.MarkerCluster
+import com.rescuemesh.ai.intelligence.MarkerClusterEngine
 import com.rescuemesh.ai.intelligence.RoutePlanner
 import com.rescuemesh.ai.location.LocationResult
 import com.rescuemesh.ai.ui.theme.*
@@ -37,7 +46,7 @@ import com.rescuemesh.ai.ui.theme.*
 /**
  * Tactical 3-Tier Map Presentation:
  * Tier 1: Surveyed graph with Dijkstra routing when nodes.isNotEmpty()
- * Tier 2: 1 km x 1 km Metric Situational Canvas when nodes.isEmpty() and coordinates are available
+ * Tier 2: Dynamic Auto-Fit Situational Canvas with Clustering & 4 Camera Modes when nodes.isEmpty()
  * Tier 3: Unlocated situational feed when nodes.isEmpty() and no coordinates are available
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -48,6 +57,7 @@ fun MapScreen(
     observations: List<ObservationEntity> = emptyList(),
     userLocation: LocationResult? = null,
     onNavigateToObservationDetail: ((String) -> Unit)? = null,
+    onNavigateToChat: ((String) -> Unit)? = null,
     onFindRoute: (fromNodeId: String, toNodeId: String) -> RoutePlanner.RouteResult?
 ) {
     var selectedFromNode by remember { mutableStateOf<String?>(null) }
@@ -188,7 +198,8 @@ fun MapScreen(
                         selectedPoint = selectedSituationalPoint,
                         onPointSelected = { selectedSituationalPoint = it },
                         onDismissSelection = { selectedSituationalPoint = null },
-                        onNavigateToObservationDetail = onNavigateToObservationDetail
+                        onNavigateToObservationDetail = onNavigateToObservationDetail,
+                        onNavigateToChat = onNavigateToChat
                     )
                 }
 
@@ -207,10 +218,13 @@ fun MapScreen(
     }
 }
 
+private val TacticalBlue = Color(0xFF2196F3)
+
 /**
  * Tier 2: 1 km x 1 km metric situational canvas plotting SOS, hazards, and observations
  * centered on the user's GPS or the centroid of active field reports.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SituationalCanvasView(
     geoObservations: List<ObservationEntity>,
@@ -218,16 +232,54 @@ private fun SituationalCanvasView(
     selectedPoint: ProjectedSituationalPoint?,
     onPointSelected: (ProjectedSituationalPoint) -> Unit,
     onDismissSelection: () -> Unit,
-    onNavigateToObservationDetail: ((String) -> Unit)? = null
+    onNavigateToObservationDetail: ((String) -> Unit)? = null,
+    onNavigateToChat: ((String) -> Unit)? = null
 ) {
     val density = LocalDensity.current
     val padPx = with(density) { 36.dp.toPx() }
-    val tapHitRadiusPx = with(density) { 32.dp.toPx() }
+    val tapHitRadiusPx = with(density) { 36.dp.toPx() }
 
-    val centerLat = userLocation?.latitude ?: geoObservations.firstOrNull()?.latitude ?: 0.0
-    val centerLon = userLocation?.longitude ?: geoObservations.firstOrNull()?.longitude ?: 0.0
+    val allGeoPoints = remember(geoObservations, userLocation) {
+        val obsPoints = geoObservations.mapNotNull { obs ->
+            val lat = obs.latitude
+            val lon = obs.longitude
+            if (lat != null && lon != null) GeoPoint(lat, lon) else null
+        }
+        if (userLocation != null) obsPoints + GeoPoint(userLocation.latitude, userLocation.longitude) else obsPoints
+    }
 
-    val points = remember(geoObservations, centerLat, centerLon) {
+    val cameraStateMachine = remember {
+        val initialCenterLat = userLocation?.latitude ?: geoObservations.firstOrNull()?.latitude ?: 0.0
+        val initialCenterLon = userLocation?.longitude ?: geoObservations.firstOrNull()?.longitude ?: 0.0
+        val initialLoc = if (userLocation != null) GeoPoint(userLocation.latitude, userLocation.longitude) else null
+        CameraStateMachine(
+            com.rescuemesh.ai.intelligence.TacticalCameraState(
+                mode = if (userLocation != null) CameraMode.FOLLOW_ME else CameraMode.FIT_ALL,
+                centerLat = initialCenterLat,
+                centerLon = initialCenterLon,
+                userLocation = initialLoc
+            )
+        )
+    }
+    var cameraState by remember { mutableStateOf(cameraStateMachine.state) }
+
+    // Synchronize user location updates
+    LaunchedEffect(userLocation?.latitude, userLocation?.longitude) {
+        if (userLocation != null) {
+            cameraState = cameraStateMachine.onUserLocationUpdated(
+                latitude = userLocation.latitude,
+                longitude = userLocation.longitude,
+                allPoints = allGeoPoints
+            )
+        }
+    }
+
+    // Synchronize observation updates
+    LaunchedEffect(geoObservations) {
+        cameraState = cameraStateMachine.onPointsUpdated(allGeoPoints)
+    }
+
+    val points = remember(geoObservations) {
         geoObservations.map { obs ->
             SituationalPoint(
                 id = obs.eventId,
@@ -245,21 +297,29 @@ private fun SituationalCanvasView(
     }
 
     var currentLayout by remember { mutableStateOf<SituationalCanvasLayout?>(null) }
+    var selectedCluster by remember { mutableStateOf<MarkerCluster?>(null) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(points, centerLat, centerLon) {
+                .pointerInput(points, cameraState.centerLat, cameraState.centerLon, cameraState.radiusMeters) {
                     detectTapGestures { offset ->
                         val layout = currentLayout ?: return@detectTapGestures
-                        val hit = layout.projectedPoints.find { proj ->
-                            (proj.canvasOffset - offset).getDistance() < tapHitRadiusPx
-                        }
-                        if (hit != null) {
-                            onPointSelected(hit)
+                        val clusters = MarkerClusterEngine.cluster(layout.projectedPoints, tapHitRadiusPx)
+                        val hitCluster = MarkerClusterEngine.findClusterAt(clusters, offset, tapHitRadiusPx)
+                        if (hitCluster != null) {
+                            if (hitCluster.isCluster) {
+                                selectedCluster = hitCluster
+                            } else {
+                                val hitProj = layout.projectedPoints.find { it.point.id == hitCluster.representativePoint.id }
+                                if (hitProj != null) {
+                                    onPointSelected(hitProj)
+                                }
+                            }
                         } else {
                             onDismissSelection()
+                            selectedCluster = null
                         }
                     }
                 }
@@ -268,12 +328,12 @@ private fun SituationalCanvasView(
             val canvasHeight = size.height
 
             val layout = MapCoordinateProjector.projectSituationalCanvas(
-                centerLat = centerLat,
-                centerLon = centerLon,
+                centerLat = cameraState.centerLat,
+                centerLon = cameraState.centerLon,
                 points = points,
                 width = canvasWidth,
                 height = canvasHeight,
-                radiusMeters = 500f,
+                radiusMeters = cameraState.radiusMeters,
                 paddingPx = padPx
             )
             currentLayout = layout
@@ -283,12 +343,12 @@ private fun SituationalCanvasView(
 
             // Tactical Circular Radar Scope Background
             drawCircle(
-                color = SurfaceDark.copy(alpha = 0.45f),
+                color = SurfaceDark.copy(alpha = 0.50f),
                 radius = radiusPx,
                 center = center
             )
             drawCircle(
-                color = SurfaceBorder.copy(alpha = 0.8f),
+                color = SurfaceBorder.copy(alpha = 0.85f),
                 radius = radiusPx,
                 center = center,
                 style = Stroke(width = 1.5.dp.toPx())
@@ -311,7 +371,8 @@ private fun SituationalCanvasView(
                 pathEffect = crosshairEffect
             )
 
-            // Concentric Metric Distance Rings (100m, 250m, 500m)
+            // Concentric Dynamic Metric Distance Rings (Calculated via AutoFitViewportCalculator)
+            val dynamicRings = AutoFitViewportCalculator.calculateDynamicRings(cameraState.radiusMeters)
             val ringEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f), 0f)
             val ringTextPaint = Paint().apply {
                 color = android.graphics.Color.parseColor("#8B949E")
@@ -319,19 +380,22 @@ private fun SituationalCanvasView(
                 textAlign = Paint.Align.CENTER
             }
 
-            layout.ringRadiiPx.forEach { (meters, rPx) ->
-                drawCircle(
-                    color = SurfaceBorder.copy(alpha = 0.45f),
-                    radius = rPx,
-                    center = center,
-                    style = Stroke(width = 1.dp.toPx(), pathEffect = ringEffect)
-                )
-                drawContext.canvas.nativeCanvas.drawText(
-                    "${meters}m",
-                    center.x,
-                    center.y - rPx + 16f,
-                    ringTextPaint
-                )
+            dynamicRings.forEach { meters ->
+                val rPx = meters * layout.pixelsPerMeter
+                if (rPx <= radiusPx) {
+                    drawCircle(
+                        color = SurfaceBorder.copy(alpha = 0.45f),
+                        radius = rPx,
+                        center = center,
+                        style = Stroke(width = 1.dp.toPx(), pathEffect = ringEffect)
+                    )
+                    drawContext.canvas.nativeCanvas.drawText(
+                        AutoFitViewportCalculator.formatDistance(meters),
+                        center.x,
+                        center.y - rPx + 16f,
+                        ringTextPaint
+                    )
+                }
             }
 
             // Cardinal Direction Identifiers (North, South, East, West)
@@ -346,187 +410,378 @@ private fun SituationalCanvasView(
             drawContext.canvas.nativeCanvas.drawText("E", center.x + radiusPx + 16.dp.toPx(), center.y + 8f, cardinalPaint)
             drawContext.canvas.nativeCanvas.drawText("W", center.x - radiusPx - 16.dp.toPx(), center.y + 8f, cardinalPaint)
 
-            // User Location Marker
+            // Live User Location Marker (Blue core, accuracy halo, heading cone)
+            var userCenterOffset: Offset? = null
             if (userLocation != null) {
-                // If center is user's GPS, offset is center
-                val userCenter = center
+                val deltaLat = userLocation.latitude - cameraState.centerLat
+                val deltaLon = userLocation.longitude - cameraState.centerLon
+                val midLatRad = Math.toRadians((cameraState.centerLat + userLocation.latitude) / 2.0)
+                val cosLat = kotlin.math.max(0.01, kotlin.math.cos(midLatRad))
+                val dy = deltaLat * 111132.95
+                val dx = deltaLon * 111320.0 * cosLat
+                val userCanvasX = (center.x + dx * layout.pixelsPerMeter).toFloat()
+                val userCanvasY = (center.y - dy * layout.pixelsPerMeter).toFloat()
+                val uCenter = Offset(userCanvasX, userCanvasY)
+                userCenterOffset = uCenter
+
+                // Accuracy Halo
                 val userAcc = userLocation.accuracy
                 if (userAcc != null && userAcc > 0f) {
-                    val userAccPx = (userAcc * layout.pixelsPerMeter).coerceIn(6f, radiusPx)
+                    val userAccPx = (userAcc * layout.pixelsPerMeter).coerceIn(8f, radiusPx)
                     drawCircle(
-                        color = StatusClear.copy(alpha = 0.15f),
+                        color = TacticalBlue.copy(alpha = 0.20f),
                         radius = userAccPx,
-                        center = userCenter
+                        center = uCenter
                     )
                     drawCircle(
-                        color = StatusClear.copy(alpha = 0.5f),
+                        color = TacticalBlue.copy(alpha = 0.60f),
                         radius = userAccPx,
-                        center = userCenter,
+                        center = uCenter,
                         style = Stroke(width = 1.dp.toPx())
                     )
                 }
 
-                // Core user dot
+                // Heading Cone (wedge pointing in direction of bearing)
+                val bearing = userLocation.bearing
+                if (bearing != null && bearing >= 0f) {
+                    val coneRadiusPx = 36.dp.toPx()
+                    val sweepAngle = 45.0
+                    val startAngleRad = Math.toRadians((bearing - 90.0 - sweepAngle / 2.0))
+                    val endAngleRad = Math.toRadians((bearing - 90.0 + sweepAngle / 2.0))
+
+                    val conePath = Path().apply {
+                        moveTo(uCenter.x, uCenter.y)
+                        lineTo(
+                            (uCenter.x + coneRadiusPx * kotlin.math.cos(startAngleRad)).toFloat(),
+                            (uCenter.y + coneRadiusPx * kotlin.math.sin(startAngleRad)).toFloat()
+                        )
+                        lineTo(
+                            (uCenter.x + coneRadiusPx * kotlin.math.cos(endAngleRad)).toFloat(),
+                            (uCenter.y + coneRadiusPx * kotlin.math.sin(endAngleRad)).toFloat()
+                        )
+                        close()
+                    }
+                    drawPath(
+                        path = conePath,
+                        color = TacticalBlue.copy(alpha = 0.35f)
+                    )
+                }
+
+                // User Blue Core
                 drawCircle(
-                    color = StatusClear,
-                    radius = 8.dp.toPx(),
-                    center = userCenter
+                    color = TacticalBlue,
+                    radius = 9.dp.toPx(),
+                    center = uCenter
                 )
                 drawCircle(
                     color = Color.White,
-                    radius = 3.dp.toPx(),
-                    center = userCenter
+                    radius = 4.dp.toPx(),
+                    center = uCenter
                 )
 
                 val userPaint = Paint().apply {
-                    color = android.graphics.Color.parseColor("#3FB950") // StatusClear
+                    color = android.graphics.Color.parseColor("#53B1FD")
                     textSize = 18f
                     isFakeBoldText = true
                     textAlign = Paint.Align.CENTER
                 }
                 drawContext.canvas.nativeCanvas.drawText(
                     "YOU",
-                    userCenter.x,
-                    userCenter.y + 18.dp.toPx(),
+                    uCenter.x,
+                    uCenter.y + 18.dp.toPx(),
                     userPaint
                 )
             }
 
-            // Render Geographic Observation Points
-            layout.projectedPoints.forEach { proj ->
-                val isSelected = selectedPoint?.point?.id == proj.point.id
-                val pt = proj.point
+            // Dotted connection line to selected target
+            if (selectedPoint != null && userCenterOffset != null) {
+                val targetEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
+                drawLine(
+                    color = TacticalBlue.copy(alpha = 0.75f),
+                    start = userCenterOffset,
+                    end = selectedPoint.canvasOffset,
+                    strokeWidth = 2.dp.toPx(),
+                    pathEffect = targetEffect
+                )
+            }
 
-                if (proj.isWithinBounds) {
-                    // Draw accuracy circle
-                    if (proj.accuracyRadiusPx > 4f) {
-                        drawCircle(
-                            color = PrimaryAmber.copy(alpha = 0.1f),
-                            radius = proj.accuracyRadiusPx,
-                            center = proj.canvasOffset
-                        )
+            // Cluster & Marker Rendering via MarkerClusterEngine
+            val clusters = MarkerClusterEngine.cluster(layout.projectedPoints, tapHitRadiusPx)
+            clusters.forEach { cluster ->
+                if (cluster.isCluster) {
+                    // Cluster rendering with outer glow & count
+                    val glowColor = when {
+                        cluster.hasSos -> StatusBlocked
+                        cluster.hasHazard -> StatusHazard
+                        else -> TacticalBlue
                     }
 
-                    val (markerColor, badgeText) = when (pt.type) {
-                        "SOS" -> StatusBlocked to "SOS"
-                        "HAZARD" -> StatusHazard to "HZ"
-                        "ROUTE_STATUS" -> (if (pt.status == "OPEN") StatusClear else StatusBlocked) to (if (pt.status == "OPEN") "OP" else "BL")
-                        else -> PrimaryAmber to "NOTE"
-                    }
-
-                    // SOS High-Visibility Outer Ring
-                    if (pt.type == "SOS") {
-                        drawCircle(
-                            color = StatusBlocked.copy(alpha = 0.35f),
-                            radius = 22.dp.toPx(),
-                            center = proj.canvasOffset
-                        )
-                    }
-
-                    // Core Circle
+                    // Outer halo
                     drawCircle(
-                        color = if (isSelected) Color.White else markerColor,
-                        radius = if (isSelected) 18.dp.toPx() else 14.dp.toPx(),
-                        center = proj.canvasOffset
+                        color = glowColor.copy(alpha = 0.30f),
+                        radius = 26.dp.toPx(),
+                        center = cluster.screenOffset
                     )
+                    // Core surface
                     drawCircle(
-                        color = if (isSelected) PrimaryAmber else SurfaceDark,
-                        radius = if (isSelected) 14.dp.toPx() else 11.dp.toPx(),
-                        center = proj.canvasOffset
+                        color = SurfaceDark,
+                        radius = 18.dp.toPx(),
+                        center = cluster.screenOffset
+                    )
+                    // Border ring
+                    drawCircle(
+                        color = glowColor,
+                        radius = 18.dp.toPx(),
+                        center = cluster.screenOffset,
+                        style = Stroke(width = 2.5.dp.toPx())
                     )
 
-                    // Center badge label
-                    val badgePaint = Paint().apply {
+                    val countPaint = Paint().apply {
                         color = android.graphics.Color.WHITE
-                        textSize = 19f
+                        textSize = 22f
                         textAlign = Paint.Align.CENTER
                         isFakeBoldText = true
                     }
                     drawContext.canvas.nativeCanvas.drawText(
-                        badgeText,
-                        proj.canvasOffset.x,
-                        proj.canvasOffset.y + 7f,
-                        badgePaint
-                    )
-
-                    // Title label below marker
-                    val labelPaint = Paint().apply {
-                        color = android.graphics.Color.parseColor("#C9D1D9")
-                        textSize = 18f
-                        textAlign = Paint.Align.CENTER
-                    }
-                    drawContext.canvas.nativeCanvas.drawText(
-                        pt.label.take(12),
-                        proj.canvasOffset.x,
-                        proj.canvasOffset.y + 24.dp.toPx(),
-                        labelPaint
+                        "${cluster.totalCount}",
+                        cluster.screenOffset.x,
+                        cluster.screenOffset.y + 8f,
+                        countPaint
                     )
                 } else {
-                    // Out-of-bounds marker: Clamped to outer perimeter with directional label
-                    val (tagColor, tagPrefix) = when (pt.type) {
-                        "SOS" -> StatusBlocked to "SOS"
-                        "HAZARD" -> StatusHazard to "HZ"
-                        else -> TextTertiary to "PT"
-                    }
+                    // Single Marker
+                    val proj = layout.projectedPoints.find { it.point.id == cluster.representativePoint.id } ?: return@forEach
+                    val isSelected = selectedPoint?.point?.id == proj.point.id
+                    val pt = proj.point
 
-                    drawCircle(
-                        color = tagColor,
-                        radius = 8.dp.toPx(),
-                        center = proj.canvasOffset
-                    )
+                    if (proj.isWithinBounds) {
+                        if (proj.accuracyRadiusPx > 4f) {
+                            drawCircle(
+                                color = PrimaryAmber.copy(alpha = 0.1f),
+                                radius = proj.accuracyRadiusPx,
+                                center = proj.canvasOffset
+                            )
+                        }
 
-                    val distStr = if (proj.distanceMeters >= 1000f) {
-                        "${String.format("%.1f", proj.distanceMeters / 1000f)}km"
+                        val (markerColor, badgeText) = when (pt.type) {
+                            "SOS" -> StatusBlocked to "SOS"
+                            "HAZARD" -> StatusHazard to "HZ"
+                            "ROUTE_STATUS" -> (if (pt.status == "OPEN") StatusClear else StatusBlocked) to (if (pt.status == "OPEN") "OP" else "BL")
+                            else -> TacticalBlue to "NOTE"
+                        }
+
+                        // SOS High-Visibility Outer Ring
+                        if (pt.type == "SOS") {
+                            drawCircle(
+                                color = StatusBlocked.copy(alpha = 0.35f),
+                                radius = 22.dp.toPx(),
+                                center = proj.canvasOffset
+                            )
+                        }
+
+                        // Core Circle
+                        drawCircle(
+                            color = if (isSelected) Color.White else markerColor,
+                            radius = if (isSelected) 18.dp.toPx() else 14.dp.toPx(),
+                            center = proj.canvasOffset
+                        )
+                        drawCircle(
+                            color = if (isSelected) PrimaryAmber else SurfaceDark,
+                            radius = if (isSelected) 14.dp.toPx() else 11.dp.toPx(),
+                            center = proj.canvasOffset
+                        )
+
+                        // Center badge label
+                        val badgePaint = Paint().apply {
+                            color = android.graphics.Color.WHITE
+                            textSize = 19f
+                            textAlign = Paint.Align.CENTER
+                            isFakeBoldText = true
+                        }
+                        drawContext.canvas.nativeCanvas.drawText(
+                            badgeText,
+                            proj.canvasOffset.x,
+                            proj.canvasOffset.y + 7f,
+                            badgePaint
+                        )
+
+                        // Title label below marker
+                        val labelPaint = Paint().apply {
+                            color = android.graphics.Color.parseColor("#C9D1D9")
+                            textSize = 18f
+                            textAlign = Paint.Align.CENTER
+                        }
+                        drawContext.canvas.nativeCanvas.drawText(
+                            pt.label.take(12),
+                            proj.canvasOffset.x,
+                            proj.canvasOffset.y + 24.dp.toPx(),
+                            labelPaint
+                        )
                     } else {
-                        "${proj.distanceMeters.toInt()}m"
-                    }
+                        // Out-of-bounds marker
+                        val (tagColor, tagPrefix) = when (pt.type) {
+                            "SOS" -> StatusBlocked to "SOS"
+                            "HAZARD" -> StatusHazard to "HZ"
+                            else -> TextTertiary to "PT"
+                        }
 
-                    val outPaint = Paint().apply {
-                        color = android.graphics.Color.parseColor("#E6EDF3")
-                        textSize = 17f
-                        textAlign = Paint.Align.CENTER
-                        isFakeBoldText = true
+                        drawCircle(
+                            color = tagColor,
+                            radius = 8.dp.toPx(),
+                            center = proj.canvasOffset
+                        )
+
+                        val distStr = if (proj.distanceMeters >= 1000f) {
+                            "${String.format(java.util.Locale.US, "%.1f", proj.distanceMeters / 1000f)}km"
+                        } else {
+                            "${proj.distanceMeters.toInt()}m"
+                        }
+
+                        val outPaint = Paint().apply {
+                            color = android.graphics.Color.parseColor("#E6EDF3")
+                            textSize = 17f
+                            textAlign = Paint.Align.CENTER
+                            isFakeBoldText = true
+                        }
+                        drawContext.canvas.nativeCanvas.drawText(
+                            "$tagPrefix $distStr",
+                            proj.canvasOffset.x,
+                            proj.canvasOffset.y - 12.dp.toPx(),
+                            outPaint
+                        )
                     }
-                    drawContext.canvas.nativeCanvas.drawText(
-                        "$tagPrefix $distStr",
-                        proj.canvasOffset.x,
-                        proj.canvasOffset.y - 12.dp.toPx(),
-                        outPaint
+                }
+            }
+        }
+
+        // Top Tactical Overlays: Camera Modes & Safety Disclaimer
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+        ) {
+            // Camera Mode Selector Chips (Touch targets >= 48dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CameraModeChip(
+                    title = "Follow me",
+                    isSelected = cameraState.mode == CameraMode.FOLLOW_ME,
+                    onClick = { cameraState = cameraStateMachine.onSelectMode(CameraMode.FOLLOW_ME, allGeoPoints) },
+                    modifier = Modifier.weight(1f)
+                )
+                CameraModeChip(
+                    title = "Fit all",
+                    isSelected = cameraState.mode == CameraMode.FIT_ALL,
+                    onClick = { cameraState = cameraStateMachine.onSelectMode(CameraMode.FIT_ALL, allGeoPoints) },
+                    modifier = Modifier.weight(1f)
+                )
+                CameraModeChip(
+                    title = "Target",
+                    isSelected = cameraState.mode == CameraMode.FIT_ME_TARGET,
+                    onClick = { cameraState = cameraStateMachine.onSelectMode(CameraMode.FIT_ME_TARGET, allGeoPoints) },
+                    modifier = Modifier.weight(1f)
+                )
+                CameraModeChip(
+                    title = "Manual",
+                    isSelected = cameraState.mode == CameraMode.MANUAL,
+                    onClick = { cameraState = cameraStateMachine.onSelectMode(CameraMode.MANUAL, allGeoPoints) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            // Invariant 4 Safety Disclaimer Banner
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                color = SurfaceDark.copy(alpha = 0.94f),
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, SurfaceBorder)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Warning,
+                        contentDescription = null,
+                        tint = PrimaryAmber,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = AutoFitViewportCalculator.SAFETY_DISCLAIMER,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
                     )
                 }
             }
         }
 
-        // Invariant 4 Safety Notice: Honest coordinate display banner
-        Surface(
+        // Floating Controls on Right Side (Zoom + Recenter)
+        Column(
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            color = SurfaceDark.copy(alpha = 0.92f),
-            shape = RoundedCornerShape(8.dp),
-            border = BorderStroke(1.dp, SurfaceBorder)
+                .align(Alignment.CenterEnd)
+                .padding(end = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // Recenter Button (visible when decoupled or manual)
+            if (cameraState.isDecoupled || cameraState.mode == CameraMode.MANUAL) {
+                FloatingActionButton(
+                    onClick = { cameraState = cameraStateMachine.onRecenter(allGeoPoints) },
+                    modifier = Modifier.size(48.dp),
+                    containerColor = TacticalBlue,
+                    contentColor = Color.White,
+                    shape = CircleShape
+                ) {
+                    Icon(Icons.Filled.MyLocation, contentDescription = "Recenter Map", modifier = Modifier.size(22.dp))
+                }
+            }
+
+            // Zoom In
+            Surface(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clickable {
+                        cameraState = cameraStateMachine.onUserGesturePanOrZoom(
+                            newRadiusMeters = (cameraState.radiusMeters * 0.7f).coerceAtLeast(AutoFitViewportCalculator.MIN_RADIUS_METERS)
+                        )
+                    },
+                shape = CircleShape,
+                color = SurfaceDark.copy(alpha = 0.9f),
+                border = BorderStroke(1.dp, SurfaceBorder)
             ) {
-                Icon(
-                    imageVector = Icons.Filled.Info,
-                    contentDescription = null,
-                    tint = PrimaryAmber,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Direct metric bearings • GPS points are NOT walkable routes • Surveyed edges required for pathfinding",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Add, contentDescription = "Zoom In", tint = TextPrimary)
+                }
+            }
+
+            // Zoom Out
+            Surface(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clickable {
+                        cameraState = cameraStateMachine.onUserGesturePanOrZoom(
+                            newRadiusMeters = (cameraState.radiusMeters * 1.4f).coerceAtMost(AutoFitViewportCalculator.MAX_RADIUS_METERS)
+                        )
+                    },
+                shape = CircleShape,
+                color = SurfaceDark.copy(alpha = 0.9f),
+                border = BorderStroke(1.dp, SurfaceBorder)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Remove, contentDescription = "Zoom Out", tint = TextPrimary)
+                }
             }
         }
 
-        // Observation Detail Inspection Card (Pinned at bottom on tap)
+        // Observation Detail Inspection Card & Bottom Tactical Metric Bar (Pinned at bottom on selection)
         selectedPoint?.let { proj ->
             val obs = proj.point.rawObservation as? ObservationEntity
             Card(
@@ -534,11 +789,11 @@ private fun SituationalCanvasView(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .padding(16.dp),
-                colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.97f)),
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.98f)),
                 shape = RoundedCornerShape(14.dp),
                 border = BorderStroke(1.dp, if (proj.point.type == "SOS") StatusBlocked else SurfaceBorder)
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(modifier = Modifier.padding(14.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -546,7 +801,7 @@ private fun SituationalCanvasView(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Surface(
-                                color = if (proj.point.type == "SOS") StatusBlocked else PrimaryAmber,
+                                color = if (proj.point.type == "SOS") StatusBlocked else if (proj.point.type == "HAZARD") StatusHazard else TacticalBlue,
                                 shape = RoundedCornerShape(6.dp)
                             ) {
                                 Text(
@@ -567,7 +822,7 @@ private fun SituationalCanvasView(
                         }
                         IconButton(
                             onClick = onDismissSelection,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(32.dp)
                         ) {
                             Icon(Icons.Filled.Close, contentDescription = "Close", tint = TextSecondary)
                         }
@@ -575,32 +830,39 @@ private fun SituationalCanvasView(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
+                    // 3-Column Tactical Metric Bar
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(SurfaceVariant, RoundedCornerShape(8.dp))
+                            .padding(vertical = 8.dp, horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val distStr = if (proj.distanceMeters >= 1000f) {
-                            String.format("%.2f km", proj.distanceMeters / 1000f)
-                        } else {
-                            "${proj.distanceMeters.toInt()} m"
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Distance", style = MaterialTheme.typography.labelSmall, color = TextTertiary)
+                            val distStr = if (proj.distanceMeters >= 1000f) {
+                                String.format(java.util.Locale.US, "%.1f km", proj.distanceMeters / 1000f)
+                            } else {
+                                "${proj.distanceMeters.toInt()} m"
+                            }
+                            Text(distStr, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
                         }
-                        Text(
-                            text = "Distance: $distStr • Bearing: ${proj.bearingDegrees.toInt()}°",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = PrimaryAmber
-                        )
-                        proj.point.accuracy?.let { acc ->
-                            Text(
-                                text = "Accuracy: ±${acc.toInt()}m",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextSecondary
-                            )
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Bearing", style = MaterialTheme.typography.labelSmall, color = TextTertiary)
+                            val cardinal = getCardinalDirection(proj.bearingDegrees)
+                            Text("$cardinal (${proj.bearingDegrees.toInt()}°)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Target Fix", style = MaterialTheme.typography.labelSmall, color = TextTertiary)
+                            val acc = proj.point.accuracy
+                            val accStr = if (acc != null && acc > 0f) "±${acc.toInt()}m" else "Estimated"
+                            Text(accStr, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
                         }
                     }
 
                     if (!proj.point.status.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = "Reported Status: ${proj.point.status}",
                             style = MaterialTheme.typography.bodySmall,
@@ -615,45 +877,224 @@ private fun SituationalCanvasView(
                             Text(
                                 text = o.description,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = TextSecondary
+                                color = TextSecondary,
+                                maxLines = 2
                             )
                         }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Author: ${o.authorDeviceId.take(8)}... (Seq #${o.authorSequence})",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextTertiary
-                        )
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
-                    Button(
-                        onClick = { onNavigateToObservationDetail?.invoke(proj.point.id) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = PrimaryAmber,
-                            contentColor = BackgroundDark
-                        )
+
+                    // Tactical Action Buttons (Minimum 48dp touch target)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Visibility,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "VIEW FULL OBSERVATION & EVIDENCE",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold
-                        )
+                        val isCurrentTarget = cameraState.target?.id == proj.point.id
+                        OutlinedButton(
+                            onClick = {
+                                if (isCurrentTarget) {
+                                    cameraState = cameraStateMachine.onClearTarget(allGeoPoints)
+                                } else {
+                                    cameraState = cameraStateMachine.onSelectTarget(
+                                        CameraTarget(
+                                            id = proj.point.id,
+                                            latitude = proj.point.latitude,
+                                            longitude = proj.point.longitude,
+                                            label = proj.point.label
+                                        )
+                                    )
+                                }
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, if (isCurrentTarget) PrimaryAmber else SurfaceBorder)
+                        ) {
+                            Icon(
+                                if (isCurrentTarget) Icons.Filled.Close else Icons.Filled.Adjust,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (isCurrentTarget) PrimaryAmber else TextSecondary
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                if (isCurrentTarget) "Clear" else "Target",
+                                color = if (isCurrentTarget) PrimaryAmber else TextPrimary
+                            )
+                        }
+
+                        if (onNavigateToChat != null) {
+                            Button(
+                                onClick = { onNavigateToChat(proj.point.id) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = TacticalBlue)
+                            ) {
+                                Icon(Icons.Filled.Chat, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Chat")
+                            }
+                        }
+
+                        Button(
+                            onClick = { onNavigateToObservationDetail?.invoke(proj.point.id) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = PrimaryAmber,
+                                contentColor = BackgroundDark
+                            )
+                        ) {
+                            Icon(Icons.Filled.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Details")
+                        }
                     }
                 }
             }
         }
+
+        // Cluster Inspection Dialog
+        selectedCluster?.let { cluster ->
+            AlertDialog(
+                onDismissRequest = { selectedCluster = null },
+                title = {
+                    Text(
+                        "Incident Cluster (${cluster.totalCount} Reports)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
+                    )
+                },
+                text = {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 280.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(cluster.points) { pt ->
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val layout = currentLayout
+                                        if (layout != null) {
+                                            val proj = layout.projectedPoints.find { it.point.id == pt.id }
+                                            if (proj != null) {
+                                                onPointSelected(proj)
+                                            }
+                                        }
+                                        selectedCluster = null
+                                    },
+                                color = SurfaceVariant,
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, if (pt.type == "SOS") StatusBlocked else SurfaceBorder)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        color = if (pt.type == "SOS") StatusBlocked else if (pt.type == "HAZARD") StatusHazard else TacticalBlue,
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = pt.type,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = pt.label,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = TextPrimary
+                                        )
+                                        if (!pt.status.isNullOrBlank()) {
+                                            Text(
+                                                text = "Status: ${pt.status}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = TextSecondary
+                                            )
+                                        }
+                                    }
+                                    Icon(
+                                        Icons.Filled.ChevronRight,
+                                        contentDescription = null,
+                                        tint = TextTertiary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = { selectedCluster = null },
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Text("Close", color = PrimaryAmber)
+                    }
+                },
+                containerColor = SurfaceDark,
+                shape = RoundedCornerShape(16.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun CameraModeChip(
+    title: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .clickable(onClick = onClick)
+            .heightIn(min = 48.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = if (isSelected) TacticalBlue else SurfaceDark.copy(alpha = 0.90f),
+        border = BorderStroke(1.dp, if (isSelected) TacticalBlue else SurfaceBorder)
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                color = if (isSelected) Color.White else TextSecondary
+            )
+        }
+    }
+}
+
+private fun getCardinalDirection(degrees: Float): String {
+    val norm = ((degrees % 360f) + 360f) % 360f
+    return when {
+        norm >= 337.5f || norm < 22.5f -> "N"
+        norm < 67.5f -> "NE"
+        norm < 112.5f -> "E"
+        norm < 157.5f -> "SE"
+        norm < 202.5f -> "S"
+        norm < 247.5f -> "SW"
+        norm < 292.5f -> "W"
+        else -> "NW"
     }
 }
 

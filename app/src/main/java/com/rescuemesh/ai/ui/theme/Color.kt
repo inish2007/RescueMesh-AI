@@ -2,54 +2,75 @@ package com.rescuemesh.ai.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// --- Dark Surface Palette ---
-val BackgroundDark = Color(0xFF0D1117)
-val SurfaceDark = Color(0xFF161B22)
-val SurfaceVariant = Color(0xFF21262D)
-val SurfaceElevated = Color(0xFF2D333B)
-val SurfaceBorder = Color(0xFF30363D)
+// --- Light Theme Palette (Professional Public-Safety System) ---
+val LightBackground = Color(0xFFF7F9FB)
+val LightSurface = Color(0xFFFFFFFF)
+val LightSurfaceVariant = Color(0xFFF0F4F8)
+val LightBorder = Color(0xFFE4E9EF)
+val LightPrimaryTeal = Color(0xFF0F766E)
+val LightEmergencyRed = Color(0xFFB42318)
+val LightActionBlue = Color(0xFF175CD3)
+val LightWarningAmber = Color(0xFF9A6700)
+val LightTextPrimary = Color(0xFF182230)
+val LightTextSecondary = Color(0xFF526174)
+val LightTextTertiary = Color(0xFF8B949E)
 
-// --- Amber Accent (Rescue Operations) ---
-val AmberPrimary = Color(0xFFFFB300)
-val AmberLight = Color(0xFFFFE54C)
-val AmberDark = Color(0xFFC68400)
-val AmberContainer = Color(0xFF3D2E00)
+// --- Dark Theme Palette (Restrained, Calm, No Neon) ---
+val DarkBackground = Color(0xFF101820)
+val DarkSurface = Color(0xFF1A2630)
+val DarkSurfaceVariant = Color(0xFF22313E)
+val DarkBorder = Color(0xFF2D3B48)
+val DarkPrimaryTeal = Color(0xFF56C5B5)
+val DarkEmergencyRed = Color(0xFFF97066)
+val DarkActionBlue = Color(0xFF53B1FD)
+val DarkWarningAmber = Color(0xFFF79009)
+val DarkTextPrimary = Color(0xFFF1F5F7)
+val DarkTextSecondary = Color(0xFF94A3B8)
+val DarkTextTertiary = Color(0xFF64748B)
 
-// --- Status Colors ---
-val GreenPassable = Color(0xFF4CAF50)
-val GreenLight = Color(0xFF81C784)
-val GreenContainer = Color(0xFF1B3A1D)
+// --- Backwards Compatible Semantic Aliases ---
+val BackgroundDark = DarkBackground
+val SurfaceDark = DarkSurface
+val SurfaceVariant = DarkSurfaceVariant
+val SurfaceElevated = Color(0xFF243442)
+val SurfaceBorder = DarkBorder
 
-val RedBlocked = Color(0xFFF44336)
-val RedLight = Color(0xFFEF9A9A)
-val RedContainer = Color(0xFF3D1414)
+val AmberPrimary = LightPrimaryTeal
+val AmberLight = Color(0xFF6EE7B7)
+val AmberDark = Color(0xFF0F766E)
+val AmberContainer = Color(0xFFE6F4F1)
 
-val OrangeHazard = Color(0xFFFF9800)
-val OrangeLight = Color(0xFFFFCC80)
-val OrangeContainer = Color(0xFF3D2800)
+val GreenPassable = Color(0xFF0F766E)
+val GreenLight = Color(0xFF34D399)
+val GreenContainer = Color(0xFFE6F7F3)
 
-val BlueInfo = Color(0xFF42A5F5)
-val BlueLight = Color(0xFF90CAF9)
-val BlueContainer = Color(0xFF0D2B4A)
+val RedBlocked = LightEmergencyRed
+val RedLight = Color(0xFFFDA29B)
+val RedContainer = Color(0xFFFEE4E2)
 
-val PurpleConflict = Color(0xFFAB47BC)
-val PurpleLight = Color(0xFFCE93D8)
-val PurpleContainer = Color(0xFF2E1530)
+val OrangeHazard = LightWarningAmber
+val OrangeLight = Color(0xFFFEDF89)
+val OrangeContainer = Color(0xFFFEF0C7)
 
-val GrayUnknown = Color(0xFF9E9E9E)
-val GrayLight = Color(0xFFBDBDBD)
+val BlueInfo = LightActionBlue
+val BlueLight = Color(0xFF84CAFF)
+val BlueContainer = Color(0xFFE0F2FE)
 
-// --- Text ---
-val TextPrimary = Color(0xFFF0F6FC)
-val TextSecondary = Color(0xFF8B949E)
-val TextTertiary = Color(0xFF6E7681)
+val PurpleConflict = Color(0xFF7A5AF8)
+val PurpleLight = Color(0xFFD6BBFB)
+val PurpleContainer = Color(0xFFF4EBFF)
 
-// --- Functional ---
-val MeshActive = Color(0xFF00E676)
-val MeshInactive = Color(0xFFFF5252)
+val GrayUnknown = Color(0xFF667085)
+val GrayLight = Color(0xFFD0D5DD)
 
-// --- Aliases for UI Screens ---
-val PrimaryAmber = AmberPrimary
+val TextPrimary = DarkTextPrimary
+val TextSecondary = DarkTextSecondary
+val TextTertiary = DarkTextTertiary
+
+val MeshActive = Color(0xFF0F766E)
+val MeshInactive = Color(0xFFB42318)
+
+val PrimaryAmber = LightPrimaryTeal
 val StatusOpen = GreenPassable
 val StatusPassable = StatusOpen
 val StatusClear = StatusOpen
