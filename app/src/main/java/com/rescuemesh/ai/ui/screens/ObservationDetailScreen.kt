@@ -1,6 +1,7 @@
 package com.rescuemesh.ai.ui.screens
 
 import android.graphics.BitmapFactory
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -16,6 +17,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -475,34 +477,55 @@ fun ObservationDetailScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    // 1. Clean Title Row
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Filled.LocationOn, contentDescription = null, tint = PrimaryAmber, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Filled.LocationOn, contentDescription = null, tint = PrimaryAmber, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Geographic Fix & Quality",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextPrimary
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // 2. Full-Width Freshness Banner (Never wraps awkwardly)
+                    val freshness = formatLocationFreshness(observation.observedAtDevice, currentTimeMs)
+                    val freshnessText = if (freshness.isLiveRecent) {
+                        "Location updated recently (< 5m)"
+                    } else {
+                        freshness.statusLabel
+                    }
+
+                    Surface(
+                        color = freshness.statusColor.copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, freshness.statusColor.copy(alpha = 0.6f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (freshness.isLiveRecent) Icons.Filled.CheckCircle else Icons.Filled.Schedule,
+                                contentDescription = null,
+                                tint = freshness.statusColor,
+                                modifier = Modifier.size(16.dp)
+                            )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Geographic Fix & Freshness",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = TextPrimary
-                            )
-                        }
-
-                        val freshness = formatLocationFreshness(observation.observedAtDevice, currentTimeMs)
-                        Surface(
-                            color = freshness.statusColor.copy(alpha = 0.2f),
-                            shape = RoundedCornerShape(6.dp),
-                            border = BorderStroke(1.dp, freshness.statusColor.copy(alpha = 0.7f))
-                        ) {
-                            Text(
-                                text = freshness.statusLabel,
-                                style = MaterialTheme.typography.labelSmall,
+                                text = freshnessText,
+                                style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
-                                color = freshness.statusColor,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                color = freshness.statusColor
                             )
                         }
                     }
@@ -516,23 +539,24 @@ fun ObservationDetailScreen(
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text("Latitude", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                                 Text(latStr, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = TextPrimary, fontFamily = FontFamily.Monospace)
-                            }
-                            Column {
-                                Text("Longitude", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-                                Text(lonStr, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = TextPrimary, fontFamily = FontFamily.Monospace)
-                            }
-                            Column {
+                                Spacer(modifier = Modifier.height(8.dp))
                                 Text("Uncertainty", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                                 Text(accStr, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = PrimaryAmber)
                             }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Longitude", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                                Text(lonStr, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = TextPrimary, fontFamily = FontFamily.Monospace)
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Fix Monotonic Age", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                                Text(freshness.ageDisplay, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = TextSecondary)
+                            }
                         }
 
-                        val freshness = formatLocationFreshness(observation.observedAtDevice, currentTimeMs)
                         if (freshness.warningMessage != null) {
                             Spacer(modifier = Modifier.height(10.dp))
                             Surface(
@@ -881,7 +905,9 @@ fun ObservationDetailScreen(
                 }
             }
 
-            // Mesh Audit & Lifecycle Metadata
+            // Collapsible Technical Diagnostics Accordion
+            var isDiagnosticsExpanded by rememberSaveable { mutableStateOf(false) }
+
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceDark),
                 shape = RoundedCornerShape(12.dp),
@@ -889,27 +915,75 @@ fun ObservationDetailScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Mesh Audit & Synchronization Lifecycle",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = TextPrimary
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { isDiagnosticsExpanded = !isDiagnosticsExpanded }
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.BugReport,
+                                contentDescription = null,
+                                tint = TextSecondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Technical Diagnostics",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TextPrimary
+                            )
+                        }
+                        Icon(
+                            imageVector = if (isDiagnosticsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                            contentDescription = if (isDiagnosticsExpanded) "Collapse Diagnostics" else "Expand Diagnostics",
+                            tint = PrimaryAmber
+                        )
+                    }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    if (!isDiagnosticsExpanded) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Tap to view cryptographic digests, event UUIDs, and relay hops.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextTertiary
+                        )
+                    }
 
-                    val timeFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.getDefault())
-                    val observedDateStr = timeFormatter.format(Date(observation.observedAtDevice))
-                    val receivedDateStr = timeFormatter.format(Date(observation.receivedAt))
+                    AnimatedVisibility(visible = isDiagnosticsExpanded) {
+                        Column(modifier = Modifier.padding(top = 12.dp)) {
+                            HorizontalDivider(color = SurfaceVariant, thickness = 1.dp)
+                            Spacer(modifier = Modifier.height(8.dp))
 
-                    MetadataRow("Event UUID", observation.eventId, isMonospace = true)
-                    MetadataRow("Mission ID", observation.missionId, isMonospace = true)
-                    MetadataRow("Author Device", observation.authorDeviceId, isMonospace = true)
-                    MetadataRow("Author Sequence", "#${observation.authorSequence}")
-                    MetadataRow("Observed At", observedDateStr)
-                    MetadataRow("Received At", receivedDateStr)
-                    MetadataRow("Relay Hops Remaining", "${observation.relayHopsRemaining} hops")
-                    MetadataRow("Verification Status", observation.verificationStatus)
+                            val timeFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.getDefault())
+                            val observedDateStr = timeFormatter.format(Date(observation.observedAtDevice))
+                            val receivedDateStr = timeFormatter.format(Date(observation.receivedAt))
+
+                            MetadataRow("Event UUID", observation.eventId, isMonospace = true)
+                            MetadataRow("Mission ID", observation.missionId, isMonospace = true)
+                            MetadataRow("Author Device", observation.authorDeviceId, isMonospace = true)
+                            MetadataRow("Author Sequence", "#${observation.authorSequence}")
+                            MetadataRow("Observed At", observedDateStr)
+                            MetadataRow("Received At", receivedDateStr)
+                            MetadataRow("Relay Hops Remaining", "${observation.relayHopsRemaining} hops")
+                            MetadataRow("Verification Status", observation.verificationStatus)
+
+                            if (!observation.evidenceHash.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text("Evidence SHA-256 Digest:", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                                Text(
+                                    text = observation.evidenceHash!!,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = StatusClear
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

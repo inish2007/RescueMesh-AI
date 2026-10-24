@@ -45,11 +45,17 @@ fun HomeScreen(
     userLocation: com.rescuemesh.ai.location.LocationResult? = null,
     onNavigateToChat: (() -> Unit)? = null,
     onShareLocation: (() -> Unit)? = null,
-    onTakePhoto: (() -> Unit)? = null
+    onTakePhoto: (() -> Unit)? = null,
+    onNavigateToSettings: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as? RescueMeshApp
     val currentActiveMission by (app?.activeMission ?: MutableStateFlow(null)).collectAsState()
+
+    val localNav = com.rescuemesh.ai.ui.navigation.LocalNavController.current
+    val effectiveNavigateToSettings: () -> Unit = onNavigateToSettings ?: {
+        localNav?.navigate(com.rescuemesh.ai.ui.navigation.Screen.Settings.route)
+    }
 
     val effectiveMissionId = currentActiveMission?.missionId ?: missionId
     val effectiveMissionName = activeMissionName ?: currentActiveMission?.name ?: "Disaster Alpha"
@@ -82,7 +88,7 @@ fun HomeScreen(
                     Surface(
                         color = if (connectedPeersCount > 0) StatusClear.copy(alpha = 0.2f) else TextTertiary.copy(alpha = 0.2f),
                         shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.padding(end = 12.dp)
+                        modifier = Modifier.padding(end = 4.dp)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -95,28 +101,31 @@ fun HomeScreen(
                                     .background(if (connectedPeersCount > 0) StatusClear else TextTertiary)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
+                            val peerText = if (connectedPeersCount == 1) "1 Peer" else "$connectedPeersCount Peers"
                             Text(
-                                text = "$connectedPeersCount Peers",
+                                text = peerText,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (connectedPeersCount > 0) StatusClear else TextSecondary,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
                     }
+
+                    IconButton(
+                        onClick = { effectiveNavigateToSettings() },
+                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Settings,
+                            contentDescription = "Settings & Diagnostics",
+                            tint = PrimaryAmber
+                        )
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = SurfaceDark
                 )
             )
-        },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = onNewObservationClick,
-                containerColor = PrimaryAmber,
-                contentColor = BackgroundDark
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = "Add Observation")
-            }
         }
     ) { paddingValues ->
         LazyColumn(
@@ -311,7 +320,10 @@ fun HomeScreen(
                 ) {
                     // 1. Create Report
                     OutlinedButton(
-                        onClick = onNewObservationClick,
+                        onClick = {
+                            onNewObservationClick()
+                            localNav?.navigate(com.rescuemesh.ai.ui.navigation.Screen.Reports.route)
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 48.dp),
@@ -347,7 +359,12 @@ fun HomeScreen(
 
                     // 3. Take Photo
                     OutlinedButton(
-                        onClick = { onTakePhoto?.invoke() ?: onNewObservationClick() },
+                        onClick = {
+                            onTakePhoto?.invoke() ?: run {
+                                onNewObservationClick()
+                                localNav?.navigate(com.rescuemesh.ai.ui.navigation.Screen.Reports.route)
+                            }
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 48.dp),
@@ -365,7 +382,7 @@ fun HomeScreen(
 
                     // 4. Send Message
                     OutlinedButton(
-                        onClick = { onNavigateToChat?.invoke() },
+                        onClick = { onNavigateToChat?.invoke() ?: localNav?.navigate(com.rescuemesh.ai.ui.navigation.Screen.Chat.route) },
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 48.dp),
@@ -393,10 +410,10 @@ fun HomeScreen(
                 val isStale = locationAgeMs != null && locationAgeMs >= 15 * 60 * 1000L // >=15m is STALE (ASTRA-P0-04)
 
                 val gpsStatusLabel = when {
-                    !isGpsAvailable -> "GPS UNKNOWN"
+                    !isGpsAvailable -> "LOCATION UNAVAILABLE"
                     isStale -> "STALE FIX (>=15m)"
                     locationAgeMs != null && locationAgeMs < 120_000L -> "LIVE GPS FIX"
-                    else -> "RECENT FIX"
+                    else -> "RECENT FIX (<15m)"
                 }
 
                 val gpsStatusColor = when {
@@ -479,7 +496,7 @@ fun HomeScreen(
                             )
                         } else {
                             Text(
-                                text = "No satellite fix available • Subterranean, collapsed structure, or indoor positioning active.",
+                                text = "Location unavailable • Searching for GPS satellites or operating indoors without positioning lock.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color(0xFF8B949E)
                             )
@@ -555,7 +572,9 @@ fun HomeScreen(
                                         shape = RoundedCornerShape(8.dp),
                                         border = BorderStroke(1.dp, if (isSos) Color(0xFFE53935).copy(alpha = 0.5f) else Color(0xFF30363D)),
                                         onClick = { onObservationClick?.invoke(inc.eventId) },
-                                        modifier = Modifier.fillMaxWidth()
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 48.dp)
                                     ) {
                                         Row(
                                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -1031,7 +1050,7 @@ fun HomeScreen(
                         )
                     } else {
                         Text(
-                            text = "GPS Status: UNKNOWN (Broadcasting without verified coordinates)",
+                            text = "Location: Unavailable (broadcasting without verified coordinates)",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color(0xFFFFB300),
                             fontWeight = FontWeight.Bold
@@ -1096,6 +1115,7 @@ fun ObservationFeedCard(
         border = if (isSos) BorderStroke(1.dp, StatusBlocked.copy(alpha = 0.5f)) else BorderStroke(1.dp, SurfaceBorder.copy(alpha = 0.5f)),
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .then(
                 if (onClick != null) {
                     Modifier

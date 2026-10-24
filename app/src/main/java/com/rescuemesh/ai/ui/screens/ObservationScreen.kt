@@ -12,7 +12,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -80,14 +82,13 @@ fun ObservationScreen(
                 photoErrorMessage = "Captured image file was empty or corrupted."
             }
         } else {
-            // Cancelled or camera error: clean up empty created file immediately
+            // Cancelled or camera error: clean up empty created file immediately without alarming error
             path?.let {
                 val f = java.io.File(it)
                 evidenceManager?.cleanupFile(f) ?: run { if (f.exists()) f.delete() }
             }
-            if (!success && path != null) {
-                photoErrorMessage = "Camera capture cancelled"
-            }
+            // Normal cancellation is not an alarming fault
+            photoErrorMessage = null
         }
         pendingPhotoPath = null
     }
@@ -154,29 +155,50 @@ fun ObservationScreen(
                     style = MaterialTheme.typography.labelLarge,
                     color = TextSecondary
                 )
-                Row(
+                // Responsive 2-Column Grid (Row 1: OPEN, BLOCKED; Row 2: HAZARD, UNKNOWN)
+                val statusRows = statuses.chunked(2)
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    statuses.forEach { status ->
-                        val isSelected = reportedStatus == status
-                        val chipColor = when (status) {
-                            "OPEN" -> StatusClear
-                            "BLOCKED" -> StatusBlocked
-                            "HAZARD" -> StatusHazard
-                            else -> TextSecondary
+                    statusRows.forEach { rowStatuses ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            rowStatuses.forEach { status ->
+                                val isSelected = reportedStatus == status
+                                val chipColor = when (status) {
+                                    "OPEN" -> StatusClear
+                                    "BLOCKED" -> StatusBlocked
+                                    "HAZARD" -> StatusHazard
+                                    else -> TextSecondary
+                                }
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { reportedStatus = status },
+                                    label = {
+                                        Text(
+                                            text = status,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            textAlign = TextAlign.Center,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = chipColor,
+                                        selectedLabelColor = Color.White,
+                                        containerColor = SurfaceDark,
+                                        labelColor = TextSecondary
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp)
+                                )
+                            }
                         }
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { reportedStatus = status },
-                            label = { Text(status) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = chipColor,
-                                selectedLabelColor = Color.White,
-                                containerColor = SurfaceDark,
-                                labelColor = TextSecondary
-                            )
-                        )
                     }
                 }
             }
@@ -248,57 +270,61 @@ fun ObservationScreen(
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Filled.CameraAlt,
-                                contentDescription = null,
-                                tint = PrimaryAmber,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Photo Evidence",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = TextPrimary
-                            )
-                        }
+                        Icon(
+                            Icons.Filled.CameraAlt,
+                            contentDescription = null,
+                            tint = PrimaryAmber,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Photo Evidence",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextPrimary
+                        )
+                    }
 
-                        if (capturedPhotoPath == null) {
-                            OutlinedButton(
-                                onClick = {
-                                    try {
-                                        evidenceManager?.let { mgr ->
-                                            val (uri, file) = mgr.createEvidenceUri()
-                                            pendingPhotoPath = file.absolutePath
-                                            cameraLauncher.launch(uri)
-                                        }
-                                    } catch (e: ActivityNotFoundException) {
-                                        pendingPhotoPath?.let { p ->
-                                            val f = java.io.File(p)
-                                            evidenceManager?.cleanupFile(f) ?: run { if (f.exists()) f.delete() }
-                                        }
-                                        pendingPhotoPath = null
-                                        photoErrorMessage = "No camera application available on this device"
-                                    } catch (e: Exception) {
-                                        pendingPhotoPath?.let { p ->
-                                            val f = java.io.File(p)
-                                            evidenceManager?.cleanupFile(f) ?: run { if (f.exists()) f.delete() }
-                                        }
-                                        pendingPhotoPath = null
-                                        photoErrorMessage = "Unable to start camera: ${e.message}"
+                    if (capturedPhotoPath == null) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = {
+                                if (evidenceManager == null) {
+                                    photoErrorMessage = "Evidence storage manager unavailable."
+                                    return@OutlinedButton
+                                }
+                                try {
+                                    val (uri, file) = evidenceManager.createEvidenceUri()
+                                    pendingPhotoPath = file.absolutePath
+                                    cameraLauncher.launch(uri)
+                                } catch (e: ActivityNotFoundException) {
+                                    pendingPhotoPath?.let { p ->
+                                        val f = java.io.File(p)
+                                        evidenceManager.cleanupFile(f)
                                     }
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = PrimaryAmber)
-                            ) {
-                                Icon(Icons.Filled.AddAPhoto, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Attach Photo Evidence", fontWeight = FontWeight.Bold)
-                            }
+                                    pendingPhotoPath = null
+                                    photoErrorMessage = "No camera application available on this device"
+                                } catch (e: Exception) {
+                                    pendingPhotoPath?.let { p ->
+                                        val f = java.io.File(p)
+                                        evidenceManager.cleanupFile(f)
+                                    }
+                                    pendingPhotoPath = null
+                                    photoErrorMessage = "Unable to start camera: ${e.message}"
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = PrimaryAmber),
+                            border = BorderStroke(1.dp, PrimaryAmber.copy(alpha = 0.6f))
+                        ) {
+                            Icon(Icons.Filled.AddAPhoto, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("ATTACH PHOTO EVIDENCE", fontWeight = FontWeight.Bold)
                         }
                     }
 
@@ -485,12 +511,35 @@ fun ObservationScreen(
                     }
 
                     if (photoErrorMessage != null) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "⚠ $photoErrorMessage",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = StatusBlocked
-                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Surface(
+                            color = StatusBlocked.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, StatusBlocked.copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Filled.ErrorOutline, contentDescription = null, tint = StatusBlocked, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = photoErrorMessage ?: "",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = StatusBlocked
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { photoErrorMessage = null },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -628,7 +677,7 @@ fun ObservationScreen(
                 Icon(Icons.Filled.Save, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Broadcast Observation",
+                    text = "Save and Share Report",
                     fontWeight = FontWeight.Bold
                 )
             }

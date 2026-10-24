@@ -65,6 +65,15 @@ class Gate3TacticalUiTest {
         assertTrue("Tactical navigation touch targets must be >= 48dp", minTouchTargetDp >= 48)
     }
 
+    @Test
+    fun `NavGraph - Settings screen exists and is excluded from bottom navigation`() {
+        assertEquals("settings", Screen.Settings.route)
+        assertFalse(
+            "Settings must be a secondary screen excluded from bottom bar",
+            bottomNavScreens.any { it.route == Screen.Settings.route }
+        )
+    }
+
     // =========================================================================
     // 2. HOMESCREEN SOS & LOCATION TELEMETRY CONTRACTS (HomeScreen.kt)
     // =========================================================================

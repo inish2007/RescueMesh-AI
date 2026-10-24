@@ -7,7 +7,9 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
@@ -31,6 +33,7 @@ import com.rescuemesh.ai.ui.screens.*
  * 5. [Chat] (route: "chat")
  *
  * Secondary Destinations:
+ * - [Settings] (route: "settings")
  * - [Peers] (route: "peers")
  * - [Metrics] (route: "metrics")
  * - [ObservationDetail] (route: "observation_detail/{eventId}")
@@ -46,6 +49,9 @@ sealed class Screen(
     data object OfflineMaps : Screen("offline_maps", "Offline Maps", Icons.Filled.CloudDownload, Icons.Outlined.CloudDownload)
     data object Reports : Screen("reports", "Reports", Icons.Filled.Assignment, Icons.Outlined.Assignment)
     data object Chat : Screen("chat", "Chat", Icons.Filled.Forum, Icons.Outlined.Forum)
+
+    // Secondary destinations
+    data object Settings : Screen("settings", "Settings", Icons.Filled.Settings, Icons.Outlined.Settings)
 
     // Backwards-compatible aliases for Gate 1 & 2 callers
     data object Observations : Screen("observations", "Reports", Icons.Filled.Assignment, Icons.Outlined.Assignment)
@@ -75,6 +81,11 @@ val bottomNavScreens = listOf(
     Screen.Chat
 )
 
+/**
+ * CompositionLocal providing active NavHostController to nested screens.
+ */
+val LocalNavController = staticCompositionLocalOf<NavHostController?> { null }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RescueMeshNavHost(
@@ -94,15 +105,30 @@ fun RescueMeshNavHost(
     chatScreen: @Composable (linkedEventId: String?, onNavigateToMap: ((String) -> Unit)?) -> Unit,
     peersScreen: @Composable () -> Unit = {},
     metricsScreen: @Composable () -> Unit = {},
-    observationDetailScreen: @Composable (eventId: String, onBackClick: () -> Unit) -> Unit = { _, _ -> }
+    observationDetailScreen: @Composable (eventId: String, onBackClick: () -> Unit) -> Unit = { _, _ -> },
+    settingsScreen: @Composable (
+        onBackClick: () -> Unit,
+        onNavigateToPeers: () -> Unit,
+        onNavigateToMetrics: () -> Unit
+    ) -> Unit = { onBack, onPeers, onMetrics ->
+        SettingsScreen(
+            onBackClick = onBack,
+            onNavigateToPeers = onPeers,
+            onNavigateToMetrics = onMetrics
+        )
+    }
 ) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
-    val isDetailView = currentRoute?.startsWith("observation_detail") == true
+    val isSecondaryView = currentRoute?.startsWith("observation_detail") == true ||
+            currentRoute == Screen.Settings.route ||
+            currentRoute == Screen.Peers.route ||
+            currentRoute == Screen.Metrics.route
 
-    Scaffold(
-        bottomBar = {
-            if (!isDetailView) {
+    CompositionLocalProvider(LocalNavController provides navController) {
+        Scaffold(
+            bottomBar = {
+                if (!isSecondaryView) {
                 NavigationBar(
                     containerColor = MaterialTheme.colorScheme.surface,
                     contentColor = MaterialTheme.colorScheme.onSurface,
@@ -226,6 +252,14 @@ fun RescueMeshNavHost(
             composable(Screen.Peers.route) { peersScreen() }
             composable(Screen.Metrics.route) { metricsScreen() }
 
+            composable(Screen.Settings.route) {
+                settingsScreen(
+                    { navController.popBackStack() },
+                    { navController.navigate(Screen.Peers.route) },
+                    { navController.navigate(Screen.Metrics.route) }
+                )
+            }
+
             composable(
                 route = Screen.OBSERVATION_DETAIL_ROUTE,
                 arguments = listOf(
@@ -241,6 +275,7 @@ fun RescueMeshNavHost(
             }
         }
     }
+    }
 }
 
 /**
@@ -254,7 +289,18 @@ fun RescueMeshNavHost(
     mapScreen: @Composable (onNavigateToObservation: (String) -> Unit) -> Unit,
     peersScreen: @Composable () -> Unit,
     metricsScreen: @Composable () -> Unit,
-    observationDetailScreen: @Composable (eventId: String, onBackClick: () -> Unit) -> Unit
+    observationDetailScreen: @Composable (eventId: String, onBackClick: () -> Unit) -> Unit,
+    settingsScreen: @Composable (
+        onBackClick: () -> Unit,
+        onNavigateToPeers: () -> Unit,
+        onNavigateToMetrics: () -> Unit
+    ) -> Unit = { onBack, onPeers, onMetrics ->
+        SettingsScreen(
+            onBackClick = onBack,
+            onNavigateToPeers = onPeers,
+            onNavigateToMetrics = onMetrics
+        )
+    }
 ) = RescueMeshNavHost(
     navController = navController,
     homeScreen = { onNavigateToObs, _, _, _ -> homeScreen(onNavigateToObs) },
@@ -268,7 +314,8 @@ fun RescueMeshNavHost(
     },
     peersScreen = peersScreen,
     metricsScreen = metricsScreen,
-    observationDetailScreen = observationDetailScreen
+    observationDetailScreen = observationDetailScreen,
+    settingsScreen = settingsScreen
 )
 
 /**

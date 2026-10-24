@@ -35,20 +35,21 @@ val SurfaceVariant = DarkSurfaceVariant
 val SurfaceElevated = Color(0xFF243442)
 val SurfaceBorder = DarkBorder
 
-val AmberPrimary = LightPrimaryTeal
-val AmberLight = Color(0xFF6EE7B7)
-val AmberDark = Color(0xFF0F766E)
-val AmberContainer = Color(0xFFE6F4F1)
+val TacticalAmber = Color(0xFFFFB300)
+val AmberPrimary = TacticalAmber
+val AmberLight = Color(0xFFFFD54F)
+val AmberDark = Color(0xFFFFA000)
+val AmberContainer = Color(0xFFFFF8E1)
 
-val GreenPassable = Color(0xFF0F766E)
+val GreenPassable = Color(0xFF56C5B5)
 val GreenLight = Color(0xFF34D399)
 val GreenContainer = Color(0xFFE6F7F3)
 
-val RedBlocked = LightEmergencyRed
+val RedBlocked = Color(0xFFF97066)
 val RedLight = Color(0xFFFDA29B)
 val RedContainer = Color(0xFFFEE4E2)
 
-val OrangeHazard = LightWarningAmber
+val OrangeHazard = Color(0xFFF79009)
 val OrangeLight = Color(0xFFFEDF89)
 val OrangeContainer = Color(0xFFFEF0C7)
 
@@ -67,10 +68,10 @@ val TextPrimary = DarkTextPrimary
 val TextSecondary = DarkTextSecondary
 val TextTertiary = DarkTextTertiary
 
-val MeshActive = Color(0xFF0F766E)
-val MeshInactive = Color(0xFFB42318)
+val MeshActive = Color(0xFF00BFA5)
+val MeshInactive = Color(0xFFE53935)
 
-val PrimaryAmber = LightPrimaryTeal
+val PrimaryAmber = TacticalAmber
 val StatusOpen = GreenPassable
 val StatusPassable = StatusOpen
 val StatusClear = StatusOpen
