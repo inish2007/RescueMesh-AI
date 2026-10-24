@@ -95,6 +95,12 @@ dependencies {
     // Serialization
     implementation(libs.kotlinx.serialization.json)
 
+    // MapLibre Native Android (Gate 3 Offline Vector Maps)
+    implementation(libs.maplibre.android)
+
+    // WorkManager (Gate 3 Offline Vector Tile Downloader)
+    implementation(libs.androidx.work.runtime.ktx)
+
     // Testing
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext.junit)
