@@ -32,6 +32,16 @@ import java.lang.reflect.Proxy
  */
 class HandshakeAuthenticationTest {
 
+    @Test
+    fun asynchronousSendFailureIsReportedToCoordinator() = runBlocking {
+        val transport = createTransport()
+        transport.handleIncomingMessage("endpoint", SyncMessage.Hello(deviceId = "peer", deviceName = "Peer", missionId = activeMission))
+        fakeClient.failSend = true
+
+        assertFalse("Failed Nearby Task must not count as successful dispatch",
+            transport.sendMessage("endpoint", SyncMessage.StateDigest(deviceId = "local", sequences = emptyMap())))
+    }
+
     private lateinit var dummyContext: Context
     private lateinit var fakeClient: FakeConnectionsClient
     private lateinit var connectionsClientProxy: ConnectionsClient
@@ -323,6 +333,7 @@ class HandshakeAuthenticationTest {
     }
 
     private class FakeConnectionsClient : InvocationHandler {
+        var failSend = false
         val disconnectedEndpoints = mutableListOf<String>()
         val sentPayloads = mutableListOf<Pair<String, Payload>>()
 
@@ -346,7 +357,7 @@ class HandshakeAuthenticationTest {
                     val endpointId = nonNullArgs[0] as String
                     val payload = nonNullArgs[1] as Payload
                     sentPayloads.add(endpointId to payload)
-                    Tasks.forResult(null)
+                    if (failSend) Tasks.forException<Void>(IllegalStateException("Link lost")) else Tasks.forResult(null)
                 }
                 "stopAllEndpoints", "stopAdvertising", "stopDiscovery" -> {
                     null

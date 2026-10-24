@@ -118,4 +118,136 @@ object MapCoordinateProjector {
             node.nodeId to Offset(offsetX + dx, offsetY + dy)
         }
     }
+
+    /**
+     * Projects geographic observation and peer points onto an honest 1 km x 1 km metric situational canvas.
+     *
+     * @param centerLat Origin latitude (typically device's own GPS or mission centroid)
+     * @param centerLon Origin longitude
+     * @param points List of geographic points to project
+     * @param width Total canvas width in pixels
+     * @param height Total canvas height in pixels
+     * @param radiusMeters Radius of situational canvas in meters (default 500m for a 1 km x 1 km field)
+     * @param paddingPx Padding clearance around canvas perimeter
+     * @return [SituationalCanvasLayout] containing scale, metric rings, and clamped/projected points
+     */
+    fun projectSituationalCanvas(
+        centerLat: Double,
+        centerLon: Double,
+        points: List<SituationalPoint>,
+        width: Float,
+        height: Float,
+        radiusMeters: Float = 500f,
+        paddingPx: Float = 36f
+    ): SituationalCanvasLayout {
+        val centerX = width / 2f
+        val centerY = height / 2f
+        val centerOffset = Offset(centerX, centerY)
+
+        val usableWidth = max(20f, width - paddingPx * 2f)
+        val usableHeight = max(20f, height - paddingPx * 2f)
+        val radiusPx = min(usableWidth, usableHeight) / 2f
+        val safeRadiusMeters = max(10f, radiusMeters)
+        val pixelsPerMeter = radiusPx / safeRadiusMeters
+
+        val standardRings = listOf(100, 250, 500)
+        val ringRadiiPx = standardRings
+            .filter { it.toFloat() <= safeRadiusMeters }
+            .map { it to (it.toFloat() * pixelsPerMeter) }
+
+        val projected = points.map { pt ->
+            val deltaLat = pt.latitude - centerLat
+            val deltaLon = pt.longitude - centerLon
+            val midLatRad = Math.toRadians((centerLat + pt.latitude) / 2.0)
+            val cosLat = max(0.01, cos(midLatRad))
+
+            // 1 deg latitude ≈ 111132.95m; 1 deg longitude ≈ 111320m * cos(lat)
+            val dy = deltaLat * 111132.95
+            val dx = deltaLon * 111320.0 * cosLat
+
+            val dist = kotlin.math.sqrt(dx * dx + dy * dy).toFloat()
+            val rad = kotlin.math.atan2(dx, dy)
+            val bearing = ((Math.toDegrees(rad) + 360.0) % 360.0).toFloat()
+            val isWithin = dist <= safeRadiusMeters
+
+            val canvasPos = if (isWithin) {
+                Offset(
+                    (centerX + dx * pixelsPerMeter).toFloat(),
+                    (centerY - dy * pixelsPerMeter).toFloat()
+                )
+            } else {
+                // Clamp to boundary perimeter for out-of-bounds directional indication
+                val normX = if (dist > EPSILON) (dx / dist).toFloat() else 0f
+                val normY = if (dist > EPSILON) (dy / dist).toFloat() else 1f
+                Offset(
+                    centerX + normX * radiusPx,
+                    centerY - normY * radiusPx
+                )
+            }
+
+            val accPx = if (pt.accuracy != null && pt.accuracy > 0f) {
+                (pt.accuracy * pixelsPerMeter).coerceIn(4f, radiusPx)
+            } else {
+                0f
+            }
+
+            ProjectedSituationalPoint(
+                point = pt,
+                canvasOffset = canvasPos,
+                distanceMeters = dist,
+                bearingDegrees = bearing,
+                isWithinBounds = isWithin,
+                accuracyRadiusPx = accPx
+            )
+        }
+
+        return SituationalCanvasLayout(
+            centerCanvasOffset = centerOffset,
+            radiusPx = radiusPx,
+            radiusMeters = safeRadiusMeters,
+            pixelsPerMeter = pixelsPerMeter,
+            ringRadiiPx = ringRadiiPx,
+            projectedPoints = projected
+        )
+    }
 }
+
+/**
+ * Representation of a geographic point to render on the tactical situational canvas.
+ */
+data class SituationalPoint(
+    val id: String,
+    val latitude: Double,
+    val longitude: Double,
+    val label: String,
+    val type: String, // "SOS", "HAZARD", "ROUTE_STATUS", "NOTE", "PEER", "USER"
+    val status: String? = null,
+    val accuracy: Float? = null,
+    val timestamp: Long = 0L,
+    val isLocal: Boolean = false,
+    val rawObservation: Any? = null
+)
+
+/**
+ * Projected screen representation of a situational point including distance and boundary status.
+ */
+data class ProjectedSituationalPoint(
+    val point: SituationalPoint,
+    val canvasOffset: Offset,
+    val distanceMeters: Float,
+    val bearingDegrees: Float,
+    val isWithinBounds: Boolean,
+    val accuracyRadiusPx: Float
+)
+
+/**
+ * Layout metrics for the 1 km x 1 km metric situational canvas.
+ */
+data class SituationalCanvasLayout(
+    val centerCanvasOffset: Offset,
+    val radiusPx: Float,
+    val radiusMeters: Float,
+    val pixelsPerMeter: Float,
+    val ringRadiiPx: List<Pair<Int, Float>>,
+    val projectedPoints: List<ProjectedSituationalPoint>
+)

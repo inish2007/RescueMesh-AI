@@ -128,6 +128,7 @@ class PriorityScheduler(
         val statusUpper = obs.reportedStatus?.uppercase()
 
         return when {
+            eventTypeUpper == "SOS" -> 1.0f
             eventTypeUpper == "HAZARD" -> 1.0f
             statusUpper in listOf("BLOCKED", "REPORTED_BLOCKED", "VERIFIED_BLOCKED") -> 0.95f
             eventTypeUpper == "ROUTE_STATUS" && statusUpper in listOf("OPEN", "REPORTED_OPEN", "VERIFIED_OPEN") -> 0.7f
@@ -150,14 +151,16 @@ class PriorityScheduler(
     }
 
     private fun computeInformationGain(obs: ObservationEntity): Float {
+        val eventTypeUpper = obs.eventType.uppercase()
         return when {
+            eventTypeUpper == "SOS" -> 1.0f
             // Reports that could resolve conflicts are high-value
             obs.verificationStatus == "VERIFIED" -> 1.0f
             // Route status changes provide high information gain
             obs.reportedStatus == "BLOCKED" -> 0.9f
             obs.reportedStatus == "OPEN" -> 0.7f
             // General observations
-            obs.eventType == "HAZARD" -> 0.8f
+            eventTypeUpper == "HAZARD" -> 0.8f
             else -> 0.3f
         }
     }

@@ -42,7 +42,7 @@ abstract class RescueMeshDatabase : RoomDatabase() {
                         missionId TEXT PRIMARY KEY NOT NULL,
                         name TEXT NOT NULL,
                         pairingCode TEXT NOT NULL,
-                        sector TEXT NOT NULL,
+                        description TEXT NOT NULL,
                         isActive INTEGER NOT NULL,
                         createdAt INTEGER NOT NULL
                     )

@@ -26,7 +26,7 @@ All simulations execute 100% in-memory on the JVM using headless multi-node virt
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **VOI** | 1.00 | 100.0 ms | 1.00 | 29920 B | 40 | 0.001337 |
 | **FIFO** | 9.00 | 900.0 ms | 7.00 | 232080 B | 40 | 0.000172 |
-| **RANDOM** | 2.00 | 200.0 ms | 2.00 | 86598 B | 40 | 0.000462 |
+| **RANDOM** | 1.80 | 180.0 ms | 1.60 | 77924 B | 40 | 0.000513 |
 
 ---
 
@@ -44,7 +44,7 @@ All simulations execute 100% in-memory on the JVM using headless multi-node virt
    - VoI achieves an efficiency ratio of **0.001337** critical observations delivered per byte transferred, representing a **7.8x improvement** over FIFO (0.000172).
 
 4. **Deterministic VoI vs Stochastic Random Baseline**:
-   - Random scheduler exhibits high variance, averaging **2.00 rounds** for hazard dissemination, confirming that deterministic VoI scheduling dominates stochastic item selection.
+   - Random scheduler exhibits high variance, averaging **1.80 rounds** for hazard dissemination, confirming that deterministic VoI scheduling dominates stochastic item selection.
 
 ---
 
@@ -97,14 +97,14 @@ All simulations execute 100% in-memory on the JVM using headless multi-node virt
         },
         "RANDOM": {
             "schedulerType": "RANDOM",
-            "avgHazardPropagationRounds": 2.0,
-            "avgHazardPropagationTimeMs": 200.0,
-            "mapConvergenceRounds": 2.0,
-            "totalPayloadBytesTransferred": 86598,
+            "avgHazardPropagationRounds": 1.8,
+            "avgHazardPropagationTimeMs": 180.0,
+            "mapConvergenceRounds": 1.6,
+            "totalPayloadBytesTransferred": 77924,
             "usefulObservationsPropagated": 40,
-            "bandwidthEfficiencyRatio": 4.619044319730248E-4
+            "bandwidthEfficiencyRatio": 5.133206714234383E-4
         }
     },
-    "timestamp": 1792552928419
+    "timestamp": 1792832287925
 }
 ```

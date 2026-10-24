@@ -92,7 +92,7 @@ fun ObservationScreen(
         pendingPhotoPath = null
     }
 
-    val observationTypes = listOf("ROUTE_STATUS", "HAZARD", "NOTE", "SURVIVOR")
+    val observationTypes = listOf("ROUTE_STATUS", "HAZARD", "SOS", "NOTE", "SURVIVOR")
     val statuses = listOf("OPEN", "BLOCKED", "HAZARD", "UNKNOWN")
 
     val scrollState = rememberScrollState()

@@ -48,10 +48,11 @@ android {
     }
 
     lint {
-        abortOnError = false
+        abortOnError = true
         checkReleaseBuilds = false
         ignoreTestSources = true
         checkDependencies = false
+        disable += setOf("PropertyEscape", "InvalidFragmentVersionForActivityResult")
     }
 }
 
@@ -103,6 +104,3 @@ tasks.matching { it.name == "kspDebugUnitTestKotlin" }.configureEach {
     enabled = false
 }
 
-tasks.matching { it.name.startsWith("lint") || it.name.contains("Lint") }.configureEach {
-    enabled = false
-}

@@ -1,10 +1,14 @@
 package com.rescuemesh.ai.intelligence
 
 import com.rescuemesh.ai.data.entity.MapEdgeEntity
+import com.rescuemesh.ai.data.dao.MapDao
 import com.rescuemesh.ai.data.entity.ObservationEntity
 import com.rescuemesh.ai.fakes.FakeMapDao
 import com.rescuemesh.ai.fakes.FakeObservationDao
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -209,7 +213,7 @@ class MapFusionEngineTest {
     }
 
     @Test
-    fun testVerifiedEdgesCannotBeOverriddenByUnverifiedObservations() = runBlocking {
+    fun testContradictoryReportsOnVerifiedEdgesPreserveBothSidesAsConflict() = runBlocking {
         // VERIFIED_OPEN edge
         mapDao.insertEdge(
             createEdge(
@@ -223,9 +227,10 @@ class MapFusionEngineTest {
         val resultOpen = engine.applyObservation(obsBlocked)
 
         assertNotNull(resultOpen)
-        assertEquals("VERIFIED_OPEN", resultOpen!!.newStatus)
-        assertFalse(resultOpen.isConflict)
-        assertEquals("VERIFIED_OPEN", mapDao.getEdge("edge-verified-open")!!.routeStatus)
+        assertEquals("CONFLICTED", resultOpen!!.newStatus)
+        assertTrue(resultOpen.isConflict)
+        assertEquals(setOf("obs-surveyor", "obs-unverified-blocked"), resultOpen.conflictingIds.toSet())
+        assertEquals("CONFLICTED", mapDao.getEdge("edge-verified-open")!!.routeStatus)
 
         // VERIFIED_BLOCKED edge
         mapDao.insertEdge(
@@ -240,9 +245,60 @@ class MapFusionEngineTest {
         val resultBlocked = engine.applyObservation(obsOpen)
 
         assertNotNull(resultBlocked)
-        assertEquals("VERIFIED_BLOCKED", resultBlocked!!.newStatus)
-        assertFalse(resultBlocked.isConflict)
-        assertEquals("VERIFIED_BLOCKED", mapDao.getEdge("edge-verified-blocked")!!.routeStatus)
+        assertEquals("CONFLICTED", resultBlocked!!.newStatus)
+        assertTrue(resultBlocked.isConflict)
+        assertEquals(setOf("obs-surveyor-2", "obs-unverified-open"), resultBlocked.conflictingIds.toSet())
+        assertEquals("CONFLICTED", mapDao.getEdge("edge-verified-blocked")!!.routeStatus)
+    }
+
+    @Test
+    fun testConcurrentContradictoryReportsRetainBothObservations() = runBlocking {
+        mapDao.insertEdge(createEdge("overlap"))
+        val firstRead = CompletableDeferred<Unit>()
+        val releaseFirstRead = CompletableDeferred<Unit>()
+        var reads = 0
+        val overlappingDao = object : MapDao by mapDao {
+            override suspend fun getEdge(edgeId: String): MapEdgeEntity? {
+                val snapshot = mapDao.getEdge(edgeId)
+                if (++reads == 1) {
+                    firstRead.complete(Unit)
+                    releaseFirstRead.await()
+                }
+                return snapshot
+            }
+        }
+        val concurrentEngine = MapFusionEngine(overlappingDao, observationDao)
+        val open = launch(start = CoroutineStart.UNDISPATCHED) {
+            concurrentEngine.applyObservation(createObservation("open", "overlap", "OPEN"))
+        }
+        firstRead.await()
+        val blocked = launch(start = CoroutineStart.UNDISPATCHED) {
+            concurrentEngine.applyObservation(createObservation("blocked", "overlap", "BLOCKED"))
+        }
+        releaseFirstRead.complete(Unit)
+        open.join()
+        blocked.join()
+
+        val edge = mapDao.getEdge("overlap")!!
+        assertEquals("CONFLICTED", edge.routeStatus)
+        assertEquals(setOf("open", "blocked"), edge.conflictingObservationIds!!.split(",").toSet())
+    }
+
+    @Test
+    fun testHumanVerifiedResolutionRetainsConflictEvidence() = runBlocking {
+        mapDao.insertEdge(createEdge("resolved", "CONFLICTED", conflictingIds = "open,blocked"))
+        val result = engine.applyObservation(createObservation("survey", "resolved", "BLOCKED", "VERIFIED"))!!
+        assertEquals("VERIFIED_BLOCKED", result.newStatus)
+        assertFalse(result.isConflict)
+        assertEquals(setOf("open", "blocked", "survey"), result.conflictingIds.toSet())
+    }
+
+    @Test
+    fun testAgreeingUnverifiedReportRetainsVerifiedStatusAndEvidence() = runBlocking {
+        mapDao.insertEdge(createEdge("verified", "VERIFIED_OPEN", lastObservationId = "survey"))
+        val result = engine.applyObservation(createObservation("reinforcement", "verified", "OPEN"))!!
+        assertEquals("VERIFIED_OPEN", result.newStatus)
+        assertEquals(setOf("survey", "reinforcement"), result.conflictingIds.toSet())
     }
 
     @Test

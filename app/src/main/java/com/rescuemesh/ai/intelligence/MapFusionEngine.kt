@@ -4,6 +4,8 @@ import com.rescuemesh.ai.data.dao.MapDao
 import com.rescuemesh.ai.data.dao.ObservationDao
 import com.rescuemesh.ai.data.entity.MapEdgeEntity
 import com.rescuemesh.ai.data.entity.ObservationEntity
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Conflict-preserving map fusion engine.
@@ -16,7 +18,7 @@ import com.rescuemesh.ai.data.entity.ObservationEntity
  *   Same status → no change (reinforced)
  *   Different status → CONFLICTED (both observations preserved)
  *   CONFLICTED → stays CONFLICTED until a VERIFIED review resolves it
- *   VERIFIED → can only be changed by another VERIFIED observation
+ *   VERIFIED → contradictory reports mark CONFLICTED; agreeing reports retain verification
  *
  * Critical safety rules:
  * - A REPORTED_BLOCKED edge is NEVER automatically cleared by time
@@ -27,6 +29,8 @@ class MapFusionEngine(
     private val mapDao: MapDao,
     private val observationDao: ObservationDao
 ) {
+    private val fusionMutex = Mutex()
+
     data class FusionResult(
         val edgeId: String,
         val previousStatus: String,
@@ -39,11 +43,11 @@ class MapFusionEngine(
      * Apply an observation to the map.
      * Returns the fusion result if a map edge was affected, null otherwise.
      */
-    suspend fun applyObservation(observation: ObservationEntity): FusionResult? {
-        val edgeId = observation.mapEdgeId ?: return null
-        val reportedStatus = observation.reportedStatus ?: return null
+    suspend fun applyObservation(observation: ObservationEntity): FusionResult? = fusionMutex.withLock {
+        val edgeId = observation.mapEdgeId ?: return@withLock null
+        val reportedStatus = observation.reportedStatus ?: return@withLock null
 
-        val edge = mapDao.getEdge(edgeId) ?: return null
+        val edge = mapDao.getEdge(edgeId) ?: return@withLock null
         val previousStatus = edge.routeStatus
         val isVerified = observation.verificationStatus.equals("VERIFIED", ignoreCase = true)
 
@@ -56,7 +60,7 @@ class MapFusionEngine(
             conflictIds = conflictIds.joinToString(",").ifEmpty { null }
         )
 
-        return FusionResult(
+        FusionResult(
             edgeId = edgeId,
             previousStatus = previousStatus,
             newStatus = newStatus,
@@ -81,6 +85,9 @@ class MapFusionEngine(
             ?.filter { it.isNotBlank() }
             ?.toMutableList()
             ?: mutableListOf()
+        edge.lastObservationId?.let { previousId ->
+            if (previousId !in existingConflicts) existingConflicts.add(previousId)
+        }
 
         // Human-verified survey resolves conflicts and sets verified status
         if (isVerified) {
@@ -104,10 +111,13 @@ class MapFusionEngine(
                 newStatus to listOf(observationId)
             }
 
-            // VERIFIED can only be changed by another VERIFIED observation
+            // A later contradictory report must remain visible even after a verified survey.
             currentStatus.startsWith("VERIFIED") -> {
-                // Keep verified status unless this is also a verified observation
-                currentStatus to existingConflicts
+                existingConflicts.add(observationId)
+                val contradicts =
+                    (currentStatus == "VERIFIED_OPEN" && reportedStatus in listOf("BLOCKED", "HAZARD")) ||
+                    (currentStatus == "VERIFIED_BLOCKED" && reportedStatus in listOf("OPEN", "CLEAR"))
+                (if (contradicts) "CONFLICTED" else currentStatus) to existingConflicts
             }
 
             // Same direction → reinforce (no conflict)

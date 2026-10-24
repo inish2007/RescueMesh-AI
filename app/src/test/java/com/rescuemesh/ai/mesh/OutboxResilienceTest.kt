@@ -34,6 +34,52 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 class OutboxResilienceTest {
 
+    @Test
+    fun acknowledgementDoesNotCompleteAnotherPeersDelivery() = runBlocking {
+        outboxDao.insert(OutboxEntity(eventId = "shared", targetPeerId = "peer-b"))
+        outboxDao.insert(OutboxEntity(eventId = "shared", targetPeerId = "peer-c"))
+
+        syncCoordinator.handleEventAck(SyncMessage.EventAck(deviceId = "peer-b", acknowledgedEventIds = listOf("shared")))
+
+        assertTrue(outboxDao.isDeliveredTo("shared", "peer-b"))
+        assertEquals("Unacknowledged peer must remain queued", 1, outboxDao.getPendingForPeer("peer-c").size)
+    }
+
+    @Test
+    fun missingAcknowledgementRetriesWithoutRestart() = runBlocking {
+        transport.addPeer("peer-b", "endpoint-b")
+        observationDao.insert(ObservationEntity(
+            eventId = "lost-ack", missionId = missionId, authorDeviceId = localDeviceId,
+            authorSequence = 1, eventType = "NOTE", title = "Lost ACK", observedAtDevice = 1
+        ))
+        outboxDao.insert(OutboxEntity(eventId = "lost-ack", targetPeerId = "peer-b", priority = 0.4f))
+
+        syncCoordinator.processPendingOutbox(100_000L)
+        syncCoordinator.processPendingOutbox(100_001L)
+        assertEquals("Do not retransmit while awaiting ACK", 1, transport.sentMessages.size)
+        syncCoordinator.processPendingOutbox(200_000L)
+
+        assertEquals("Lost ACK must cause retry without process restart", 2, transport.sentMessages.size)
+    }
+
+    @Test
+    fun broadcastAcknowledgementKeepsOtherPeersDeliveryRetryable() = runBlocking {
+        transport.addPeer("peer-b", "endpoint-b")
+        transport.addPeer("peer-c", "endpoint-c")
+        observationDao.insert(ObservationEntity(
+            eventId = "broadcast", missionId = missionId, authorDeviceId = localDeviceId,
+            authorSequence = 1, eventType = "NOTE", title = "Broadcast", observedAtDevice = 1
+        ))
+        outboxDao.insert(OutboxEntity(eventId = "broadcast", priority = 0.4f))
+
+        syncCoordinator.processPendingOutbox(100_000L)
+        syncCoordinator.handleEventAck(SyncMessage.EventAck(deviceId = "peer-b", acknowledgedEventIds = listOf("broadcast")))
+        syncCoordinator.processPendingOutbox(200_000L)
+
+        assertEquals(1, transport.sentMessages.count { it.first == "endpoint-b" })
+        assertEquals("Other peer must retry after missing ACK", 2, transport.sentMessages.count { it.first == "endpoint-c" })
+    }
+
     private lateinit var observationDao: FakeObservationDao
     private lateinit var mapDao: FakeMapDao
     private lateinit var outboxDao: FakeOutboxDao

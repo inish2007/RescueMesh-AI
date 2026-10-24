@@ -56,6 +56,7 @@ class PrioritySchedulerTest {
 
     @Test
     fun testFeatureUrgencyComputation() {
+        val sos = createObservation(eventType = "SOS")
         val hazard = createObservation(eventType = "HAZARD")
         val blocked = createObservation(eventType = "ROUTE_STATUS", reportedStatus = "BLOCKED")
         val openRoute = createObservation(eventType = "ROUTE_STATUS", reportedStatus = "OPEN")
@@ -64,6 +65,7 @@ class PrioritySchedulerTest {
         val note = createObservation(eventType = "NOTE")
         val other = createObservation(eventType = "CUSTOM_SENSOR")
 
+        assertEquals(1.0f, scheduler.scoreBreakdown(sos)["urgency"]!!, 1e-4f)
         assertEquals(1.0f, scheduler.scoreBreakdown(hazard)["urgency"]!!, 1e-4f)
         assertEquals(0.95f, scheduler.scoreBreakdown(blocked)["urgency"]!!, 1e-4f)
         assertEquals(0.7f, scheduler.scoreBreakdown(openRoute)["urgency"]!!, 1e-4f)
@@ -71,6 +73,11 @@ class PrioritySchedulerTest {
         assertEquals(0.4f, scheduler.scoreBreakdown(photo)["urgency"]!!, 1e-4f)
         assertEquals(0.3f, scheduler.scoreBreakdown(note)["urgency"]!!, 1e-4f)
         assertEquals(0.2f, scheduler.scoreBreakdown(other)["urgency"]!!, 1e-4f)
+
+        // Verify SOS triggers safety critical floor override (>= 0.80)
+        val sosBreakdown = scheduler.scoreBreakdown(sos)
+        assertEquals(1.0f, sosBreakdown["safetyCritical"]!!, 1e-4f)
+        assertTrue("SOS score must be at least 0.80", sosBreakdown["finalScore"]!! >= 0.80f)
     }
 
     @Test

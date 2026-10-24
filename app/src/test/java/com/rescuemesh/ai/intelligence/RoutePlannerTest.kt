@@ -59,9 +59,9 @@ class RoutePlannerTest {
         addNode("C", "Exit")
 
         // Direct long edge vs two short edges
-        addEdge("e-AB", "A", "B", 10.0f, "REPORTED_OPEN")
-        addEdge("e-BC", "B", "C", 10.0f, "REPORTED_OPEN")
-        addEdge("e-AC", "A", "C", 35.0f, "REPORTED_OPEN")
+        addEdge("e-AB", "A", "B", 10.0f, "VERIFIED_OPEN")
+        addEdge("e-BC", "B", "C", 10.0f, "VERIFIED_OPEN")
+        addEdge("e-AC", "A", "C", 35.0f, "VERIFIED_OPEN")
 
         val result = routePlanner.findRoute(fromNodeId = "A", toNodeId = "C", missionId = missionId)
 
@@ -128,9 +128,9 @@ class RoutePlannerTest {
 
         // Direct edge has distance 10.0, but is CONFLICTED
         addEdge("e-AB", "A", "B", 10.0f, "CONFLICTED")
-        // Detour via C has total distance 50.0, but both are REPORTED_OPEN
-        addEdge("e-AC", "A", "C", 25.0f, "REPORTED_OPEN")
-        addEdge("e-CB", "C", "B", 25.0f, "REPORTED_OPEN")
+        // Verified detour isolates the conflict penalty from uncertainty costs.
+        addEdge("e-AC", "A", "C", 25.0f, "VERIFIED_OPEN")
+        addEdge("e-CB", "C", "B", 25.0f, "VERIFIED_OPEN")
 
         // With default riskPenalty = 100.0, e-AB cost is 10 + 100 = 110.0.
         // Detour cost is 25 + 25 = 50.0. RoutePlanner should pick detour!
@@ -167,9 +167,9 @@ class RoutePlannerTest {
 
         // Direct edge has distance 10.0, but status is UNKNOWN
         addEdge("e-AB", "A", "B", 10.0f, "UNKNOWN")
-        // Detour via C has distance 35.0, but is REPORTED_OPEN
-        addEdge("e-AC", "A", "C", 20.0f, "REPORTED_OPEN")
-        addEdge("e-CB", "C", "B", 15.0f, "REPORTED_OPEN")
+        // Detour via C has distance 35.0 and is verified.
+        addEdge("e-AC", "A", "C", 20.0f, "VERIFIED_OPEN")
+        addEdge("e-CB", "C", "B", 15.0f, "VERIFIED_OPEN")
 
         // With default uncertainty penalty = 50.0, e-AB cost is 10 + 50 = 60.0 > 35.0
         val detourResult = routePlanner.findRoute(
@@ -193,6 +193,34 @@ class RoutePlannerTest {
         assertEquals(listOf("A", "B"), unknownResult.path)
         assertEquals(15.0, unknownResult.totalCost, 1e-4)
         assertTrue(unknownResult.warnings.any { it.contains("status UNKNOWN") })
+    }
+
+    @Test
+    fun testReportedOpenCarriesUncertaintyCostAndExplicitWarning() = runBlocking {
+        addNode("A", "Start")
+        addNode("B", "Goal")
+        addEdge("passage", "A", "B", 10.0f, "REPORTED_OPEN")
+        val reported = routePlanner.findRoute("A", "B", missionId)
+        assertTrue(reported.isComplete)
+        assertEquals(10.0, reported.totalDistance, 1e-4)
+        assertTrue(reported.warnings.any { it.contains("UNVERIFIED") })
+
+        addEdge("passage", "A", "B", 10.0f, "VERIFIED_OPEN")
+        val verified = routePlanner.findRoute("A", "B", missionId)
+        assertTrue(reported.totalCost > verified.totalCost)
+        assertEquals(10.0, verified.totalCost, 1e-4)
+        assertTrue(verified.warnings.isEmpty())
+    }
+
+    @Test
+    fun testUncertaintyCanFavorLongerVerifiedPassage() = runBlocking {
+        addNode("A", "Start")
+        addNode("B", "Goal")
+        addEdge("reported", "A", "B", 10.0f, "REPORTED_OPEN")
+        addEdge("surveyed", "A", "B", 20.0f, "VERIFIED_OPEN")
+        val result = routePlanner.findRoute("A", "B", missionId)
+        assertEquals(listOf("surveyed"), result.edgesUsed)
+        assertEquals(20.0, result.totalDistance, 1e-4)
     }
 
     @Test

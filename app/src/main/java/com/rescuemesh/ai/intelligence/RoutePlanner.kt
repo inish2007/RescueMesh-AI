@@ -145,6 +145,7 @@ class RoutePlanner(private val mapDao: MapDao) {
             when (edge.routeStatus) {
                 "CONFLICTED" -> warnings.add("⚠️ ${nodeMap[edge.fromNodeId]?.label} → ${nodeMap[edge.toNodeId]?.label}: CONFLICTED status")
                 "UNKNOWN" -> warnings.add("❓ ${nodeMap[edge.fromNodeId]?.label} → ${nodeMap[edge.toNodeId]?.label}: status UNKNOWN")
+                "REPORTED_OPEN" -> warnings.add("⚠️ ${nodeMap[edge.fromNodeId]?.label} → ${nodeMap[edge.toNodeId]?.label}: UNVERIFIED passage")
                 "REPORTED_BLOCKED", "VERIFIED_BLOCKED" -> warnings.add("🚫 ${nodeMap[edge.fromNodeId]?.label} → ${nodeMap[edge.toNodeId]?.label}: ${if (edge.routeStatus == "VERIFIED_BLOCKED") "verified" else "reported"} BLOCKED")
             }
         }
@@ -171,7 +172,8 @@ class RoutePlanner(private val mapDao: MapDao) {
             "REPORTED_BLOCKED", "VERIFIED_BLOCKED" -> BLOCKED_COST
             "CONFLICTED" -> riskPenalty
             "UNKNOWN" -> uncertaintyPenalty
-            "REPORTED_OPEN", "VERIFIED_OPEN" -> 0.0
+            "REPORTED_OPEN" -> uncertaintyPenalty / 2
+            "VERIFIED_OPEN" -> 0.0
             else -> uncertaintyPenalty / 2
         }
 

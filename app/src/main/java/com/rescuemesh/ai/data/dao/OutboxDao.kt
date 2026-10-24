@@ -32,6 +32,25 @@ interface OutboxDao {
     @Query("UPDATE outbox SET status = :status, lastAttemptAt = :attemptAt WHERE eventId = :eventId")
     suspend fun updateStatusByEvent(eventId: String, status: String, attemptAt: Long = System.currentTimeMillis())
 
+    @Query("UPDATE outbox SET status = :status, lastAttemptAt = :attemptAt WHERE eventId = :eventId AND targetPeerId = :peerId")
+    suspend fun updateStatusForPeer(eventId: String, peerId: String, status: String, attemptAt: Long)
+
+    @Query("UPDATE outbox SET status = 'SENDING', retryCount = retryCount + 1, lastAttemptAt = :now, nextAttemptAt = :ackDeadline WHERE id = :id AND status = 'PENDING'")
+    suspend fun claimSending(id: Long, now: Long, ackDeadline: Long): Int
+
+    @Query("UPDATE outbox SET status = CASE WHEN retryCount >= maxRetries AND priority < 0.8 THEN 'FAILED' ELSE 'PENDING' END WHERE status = 'SENDING' AND nextAttemptAt <= :now")
+    suspend fun requeueExpiredSending(now: Long): Int
+
+    @Transaction
+    suspend fun expandBroadcast(entry: OutboxEntity, peerIds: List<String>, priority: Float, now: Long) {
+        for (peerId in peerIds) {
+            if (!hasPendingEntry(entry.eventId, peerId) && !isDeliveredTo(entry.eventId, peerId)) {
+                insert(entry.copy(id = 0, targetPeerId = peerId, priority = priority, status = "PENDING"))
+            }
+        }
+        updateStatus(entry.id, "EXPANDED", now)
+    }
+
     @Query("UPDATE outbox SET priority = :priority, schedulerType = :schedulerType WHERE id = :id")
     suspend fun updatePriority(id: Long, priority: Float, schedulerType: String)
 
@@ -41,7 +60,7 @@ interface OutboxDao {
     @Query("UPDATE outbox SET status = 'PENDING' WHERE status = 'SENDING'")
     suspend fun resetOrphanedSendingToPending(): Int
 
-    @Query("UPDATE outbox SET status = :status, retryCount = :retryCount, nextAttemptAt = :nextAttemptAt, lastAttemptAt = :attemptAt WHERE id = :id")
+    @Query("UPDATE outbox SET status = :status, retryCount = :retryCount, nextAttemptAt = :nextAttemptAt, lastAttemptAt = :attemptAt WHERE id = :id AND status != 'DELIVERED'")
     suspend fun updateRetry(id: Long, status: String, retryCount: Int, nextAttemptAt: Long, attemptAt: Long = System.currentTimeMillis())
 
     /**
